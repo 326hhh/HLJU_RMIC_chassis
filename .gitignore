@@ -1,0 +1,26 @@
+# ---- 构建产物 ----
+build/
+mx.scratch/
+compile_commands.json
+.cache/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.su
+*.list
+
+# ---- 编译用不到的 CMSIS / 中间件目录 ----
+# cmake/stm32cubemx 只引用 CMSIS/Include 与 CMSIS/Device
+Drivers/CMSIS/DSP/
+Drivers/CMSIS/NN/
+Drivers/CMSIS/Core/
+Drivers/CMSIS/Core_A/
+Drivers/CMSIS/DAP/
+Drivers/CMSIS/RTOS/
+Drivers/CMSIS/RTOS2/
+Drivers/CMSIS/Documentation/
+
+!.settings
