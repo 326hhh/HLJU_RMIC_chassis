@@ -91,12 +91,13 @@
  * 电机转向不在这里改：某轮转向反了，去 chassis.c 的 s_bind[] 对调该轮
  * fwd_in1/fwd_in2。
  * 标定：前进时若某轮实测转速为负（表现为该轮满占空比飞转），把对应值取反。
- * 说明：右侧两轮编码器计数方向与左侧相反（镜像安装），已默认取反。
+ * 注意：2025-10-06 重新布线后编码器接线全部变化，以下已重置为 +1 默认值，
+ * 首次上电必须按 docs/CHASSIS_LIBRARY.md §10 逐轮标定后再落地跑。
  */
 #define CHASSIS_ENC_DIR_FL           +1
-#define CHASSIS_ENC_DIR_FR           -1
+#define CHASSIS_ENC_DIR_FR           +1
 #define CHASSIS_ENC_DIR_BL           +1
-#define CHASSIS_ENC_DIR_BR           -1
+#define CHASSIS_ENC_DIR_BR           +1
 
 /* ============================ 调试输出 ===================================== */
 /** 1=通过 USART1(PA9/PA10, 115200-8-N-1) 每 250ms 输出调试数据；

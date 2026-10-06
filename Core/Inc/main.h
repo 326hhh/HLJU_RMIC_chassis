@@ -57,28 +57,28 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define L_STBY_Pin GPIO_PIN_4
+#define L_STBY_GPIO_Port GPIOA
+#define L_AIN1_Pin GPIO_PIN_4
+#define L_AIN1_GPIO_Port GPIOC
+#define L_AIN2_Pin GPIO_PIN_5
+#define L_AIN2_GPIO_Port GPIOC
+#define L_BIN1_Pin GPIO_PIN_0
+#define L_BIN1_GPIO_Port GPIOB
+#define L_BIN2_Pin GPIO_PIN_1
+#define L_BIN2_GPIO_Port GPIOB
 #define LED_Pin GPIO_PIN_2
 #define LED_GPIO_Port GPIOB
-#define L_BIN1_Pin GPIO_PIN_7
-#define L_BIN1_GPIO_Port GPIOE
-#define L_BIN2_Pin GPIO_PIN_8
-#define L_BIN2_GPIO_Port GPIOE
-#define L_AIN1_Pin GPIO_PIN_10
-#define L_AIN1_GPIO_Port GPIOE
-#define L_AIN2_Pin GPIO_PIN_11
-#define L_AIN2_GPIO_Port GPIOE
-#define L_STBY_Pin GPIO_PIN_13
-#define L_STBY_GPIO_Port GPIOE
-#define R_STBY_Pin GPIO_PIN_9
-#define R_STBY_GPIO_Port GPIOD
-#define R_AIN1_Pin GPIO_PIN_10
-#define R_AIN1_GPIO_Port GPIOD
-#define R_AIN2_Pin GPIO_PIN_11
-#define R_AIN2_GPIO_Port GPIOD
-#define R_BIN1_Pin GPIO_PIN_14
-#define R_BIN1_GPIO_Port GPIOD
-#define R_BIN2_Pin GPIO_PIN_15
-#define R_BIN2_GPIO_Port GPIOD
+#define R_STBY_Pin GPIO_PIN_7
+#define R_STBY_GPIO_Port GPIOE
+#define R_AIN1_Pin GPIO_PIN_8
+#define R_AIN1_GPIO_Port GPIOE
+#define R_AIN2_Pin GPIO_PIN_10
+#define R_AIN2_GPIO_Port GPIOE
+#define R_BIN1_Pin GPIO_PIN_12
+#define R_BIN1_GPIO_Port GPIOE
+#define R_BIN2_Pin GPIO_PIN_13
+#define R_BIN2_GPIO_Port GPIOE
 
 /* USER CODE BEGIN Private defines */
 

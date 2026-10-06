@@ -18,12 +18,14 @@
 
 /* ============================= 硬件绑定表 ===================================
  * 轮序固定：FL(0)=左前 FR(1)=右前 BL(2)=左后 BR(3)=右后
- * 接线（README + 用户确认）：
- *   FL: PWM=L_PWMB=PE14(TIM1_CH4), 方向=L_BIN1(PE7)/L_BIN2(PE8), 编码器=TIM3
- *   FR: PWM=R_PWMB=PE6 (TIM9_CH2), 方向=R_BIN1(PD14)/R_BIN2(PD15), 编码器=TIM2
- *   BL: PWM=L_PWMA=PE9 (TIM1_CH1), 方向=L_AIN1(PE10)/L_AIN2(PE11), 编码器=TIM4
- *   BR: PWM=R_PWMA=PE5 (TIM9_CH1), 方向=R_AIN1(PD10)/R_AIN2(PD11), 编码器=TIM8
- * fwd_in1/fwd_in2 = 该轮"正转"时 TB6612 IN1/IN2 电平（依据原方向标定）。
+ * 接线（2025-10-06 重新布线版，见 README.md）：
+ *   FL(左前): PWM=LF_PWMA=PA1(TIM5_CH2), 方向=L_AIN1(PC4)/L_AIN2(PC5), 编码器=TIM3(PA6/PA7)
+ *   FR(右前): PWM=RF_PWMA=PA3(TIM5_CH4), 方向=R_AIN1(PE8)/R_AIN2(PE10), 编码器=TIM1(PE9/PE11)
+ *   BL(左后): PWM=LB_PWMB=PA2(TIM5_CH3), 方向=L_BIN1(PB0)/L_BIN2(PB1), 编码器=TIM4(PD12/PD13)
+ *   BR(右后): PWM=RB_PWMB=PE5(TIM9_CH1), 方向=R_BIN1(PE12)/R_BIN2(PE13), 编码器=TIM8(PC6/PC7)
+ * fwd_in1/fwd_in2 = 该轮"正转"时 TB6612 IN1/IN2 电平。
+ * 注意：方向电平沿用了旧线束的标定惯例（左轮 fwd=(0,1)、右轮 fwd=(1,0)），
+ * 新线束/新驱动板首次上电必须按 docs/CHASSIS_LIBRARY.md §10 重新标定：
  * 某轮实际转向反了 -> 把该轮两个电平对调即可。
  */
 typedef struct
@@ -41,13 +43,13 @@ typedef struct
 
 static const wheel_bind_t s_bind[CHASSIS_WHEEL_NUM] =
 {
-    /* FL */ { &htim1, TIM_CHANNEL_4, GPIOE, L_BIN1_Pin, GPIOE, L_BIN2_Pin,
+    /* FL */ { &htim5, TIM_CHANNEL_2, GPIOC, L_AIN1_Pin, GPIOC, L_AIN2_Pin,
                GPIO_PIN_RESET, GPIO_PIN_SET, &htim3 },
-    /* FR */ { &htim9, TIM_CHANNEL_2, GPIOD, R_BIN1_Pin, GPIOD, R_BIN2_Pin,
-               GPIO_PIN_SET, GPIO_PIN_RESET, &htim2 },
-    /* BL */ { &htim1, TIM_CHANNEL_1, GPIOE, L_AIN1_Pin, GPIOE, L_AIN2_Pin,
+    /* FR */ { &htim5, TIM_CHANNEL_4, GPIOE, R_AIN1_Pin, GPIOE, R_AIN2_Pin,
+               GPIO_PIN_SET, GPIO_PIN_RESET, &htim1 },
+    /* BL */ { &htim5, TIM_CHANNEL_3, GPIOB, L_BIN1_Pin, GPIOB, L_BIN2_Pin,
                GPIO_PIN_RESET, GPIO_PIN_SET, &htim4 },
-    /* BR */ { &htim9, TIM_CHANNEL_1, GPIOD, R_AIN1_Pin, GPIOD, R_AIN2_Pin,
+    /* BR */ { &htim9, TIM_CHANNEL_1, GPIOE, R_BIN1_Pin, GPIOE, R_BIN2_Pin,
                GPIO_PIN_SET, GPIO_PIN_RESET, &htim8 },
 };
 

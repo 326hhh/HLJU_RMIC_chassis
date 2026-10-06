@@ -182,22 +182,27 @@ VOFA+ 用法：新建数据引擎选 **JustFloat**（1.4.5 已内置插件，无
 | `CHASSIS_SPEED_WINDOW_MS` | 10 | 测速滑动窗口 |
 | `CHASSIS_PID_{KP,KI,KD,I_MAX,KFF}_{FL,FR,BL,BR}` | 3/0.6/0.08/900/4.0 | 速度环增益，**每轮独立**，控制律 `duty = Kp·e + Ki·∫e − Kd·d(meas)/dt + Kff·ref`，需整定 |
 | `CHASSIS_PID_OUT_MAX` | 1000 | 输出限幅（占空比满幅，四轮共用） |
-| `CHASSIS_ENC_DIR_FL/FR/BL/BR` | +1/−1/+1/−1 | 每轮编码器测量方向归一（见 §10.2）。右两轮镜像安装已默认取反 |
+| `CHASSIS_ENC_DIR_FL/FR/BL/BR` | +1 ×4 | 每轮编码器测量方向归一（见 §10.2）。重新布线后已重置为 +1，待重新标定 |
 | `CHASSIS_DEBUG_ENABLE` | 1 | USART1 调试输出总开关，正式使用改 0 |
 | `CHASSIS_DEBUG_PROTOCOL` | JustFloat | 调试协议：RawData 文本 / JustFloat 二进制（VOFA+ 数据引擎要对应） |
 
 ## 8. 硬件绑定表（`chassis.c` 中 `s_bind[]`）
 
-依据 README 接线与「A=后轮 / B=前轮」确认结果：
+依据 2025-10-06 重新布线后的 README 接线（A=前轮、B=后轮）：
 
 | 轮 | PWM | 方向引脚 | 编码器 |
 |---|---|---|---|
-| FL 左前 | TIM1_CH4 (PE14, L_PWMB) | L_BIN1(PE7) / L_BIN2(PE8) | TIM3 (PA6/PA7) |
-| FR 右前 | TIM9_CH2 (PE6, R_PWMB) | R_BIN1(PD14) / R_BIN2(PD15) | TIM2 (PA0/PA1) |
-| BL 左后 | TIM1_CH1 (PE9, L_PWMA) | L_AIN1(PE10) / L_AIN2(PE11) | TIM4 (PD12/PD13) |
-| BR 右后 | TIM9_CH1 (PE5, R_PWMA) | R_AIN1(PD10) / R_AIN2(PD11) | TIM8 (PC6/PC7) |
+| FL 左前 | TIM5_CH2 (PA1, LF_PWMA) | L_AIN1(PC4) / L_AIN2(PC5) | TIM3 (PA6/PA7) |
+| FR 右前 | TIM5_CH4 (PA3, RF_PWMA) | R_AIN1(PE8) / R_AIN2(PE10) | TIM1 (PE9/PE11) |
+| BL 左后 | TIM5_CH3 (PA2, LB_PWMB) | L_BIN1(PB0) / L_BIN2(PB1) | TIM4 (PD12/PD13) |
+| BR 右后 | TIM9_CH1 (PE5, RB_PWMB) | R_BIN1(PE12) / R_BIN2(PE13) | TIM8 (PC6/PC7) |
 
-`fwd_in1/fwd_in2` 为该轮「正转」时 TB6612 IN1/IN2 电平，源自原始方向标定（并已包含右后轮刹车 bug 的修正）。**某轮实际转向反了，把该轮两个电平对调即可。**
+其余引脚：L_STBY=PA4、R_STBY=PE7；调试串口 USART1(PA9/PA10)；编码器全部为
+TIM_ENCODERMODE_TI12（4 倍频，CPR=1760 不变）。PWM 频率：TIM5≈11.7kHz、TIM9=10kHz。
+
+`fwd_in1/fwd_in2` 为该轮「正转」时 TB6612 IN1/IN2 电平。**新线束沿用了旧标定惯例
+（左轮 (0,1)、右轮 (1,0)）作为默认值，首次上电必须按 §10.2 重新标定**
+——某轮实际转向反了，把该轮两个电平对调即可。
 
 ## 9. 集成方式
 
@@ -314,3 +319,4 @@ wz = r/(4(lx+ly))·(−ωfl − ωfr + ωbl + ωbr)
 | 0.4 | 2025-10-03 | chassis_debug 增加 JustFloat 二进制协议输出（13 通道：ref/meas/duty/yaw），供 VOFA+ 画波形 |
 | 0.5 | 2025-10-03 | PID 参数改为每轮独立（Kp/Ki/Kd/I_MAX × FL/FR/BL/BR），OUT_MAX 保持四轮共用 |
 | 0.6 | 2025-10-03 | 依据 test_data/20251003_pid_v05_6min.csv 整定：加速度前馈 Kff（解决稳态差一截），BR 单独钝化（Kp 2.5/Kd 0.15/Kff 3.0 抑制振荡） |
+| 0.7 | 2025-10-06 | 适配重新布线：PWM 改为 TIM5_CH2/3/4 + TIM9_CH1，编码器改为 TIM1/3/4/8（全部 TI12 四倍频），方向引脚换新；ENC_DIR 重置为 +1 待标定；§8 绑定表与 §7 配置表同步更新 |
