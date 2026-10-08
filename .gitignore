@@ -15,6 +15,24 @@ compile_commands.json
 # ---- 实测数据（VOFA+ 导出的 CSV 不入库，说明文档 test_data/说明.md 保留）----
 test_data/*.csv
 
+# ---- 硬件资料（hardware/：嘉立创EDA 工程与导出件）----
+# 工程/文档的自动备份目录：LCEDA 会在工程旁生成 <名称>_backup/，内含按小时存的
+# .epro2 快照，单个工程能涨到几十上百 MB，**一律不入库**
+*_backup/
+# EDA 与浏览器的临时/自动保存、编辑器崩溃残留
+*.eprj2.bak
+*.epro2.bak
+*.bak
+*.tmp
+*.autosave
+~$*
+*.swp
+
+# ---- 操作系统垃圾文件 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
 # ---- 编译用不到的 CMSIS / 中间件目录 ----
 # cmake/stm32cubemx 只引用 CMSIS/Include 与 CMSIS/Device
 Drivers/CMSIS/DSP/
