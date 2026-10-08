@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "can.h"
 #include "i2c.h"
 #include "tim.h"
 #include "usart.h"
@@ -100,6 +101,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM5_Init();
   MX_TIM8_Init();
+  MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
   chassis_init();
   chassis_demo_init();

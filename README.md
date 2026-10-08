@@ -4,6 +4,22 @@
 STM32F407VGTx + TB6612 + 麦轮底盘，编码器测速闭环 PID。
 用户代码在 `UserLib/Chassis/`，接口说明见 [docs/CHASSIS_LIBRARY.md](docs/CHASSIS_LIBRARY.md)。
 
+## 目录结构
+
+```
+INTRA_SCHOOL_COMPETITION_27RM
+├── CMakeLists.txt
+├── README.md
+├── UserLib                                              # 用户库
+│   └── Chassis                                          # 底盘库
+├── docs                                                 # 文档
+│   └── CHASSIS_LIBRARY.md                               # AI修改代码的文档  
+├── hardware                                             # 硬件相关
+│   └── 底盘扩展板原理图_2026-10-09.pdf                     # 底盘扩展板原理图
+├── test_data                                            # VOFA+调参数据
+│   └── 说明.md                                           # 说明
+```
+
 ## 接线
 
 ### TB6612
@@ -76,6 +92,13 @@ A为前轮，B为后轮，L为左轮，R为右轮。TB6612左右分布。
 | IIC1_SCL | PB6 |
 | IIC1_SDA | PB7 |
 
+### CAN
+
+| CAN | 引脚 |
+| --- | --- |
+| CAN1_RX | PB8 |
+| CAN1_TX | PB9 |
+
 ## 编译
 
 ```bash
@@ -95,3 +118,9 @@ pyocd flash -t stm32f407vgtx build/Debug/INTRA_SCHOOL_COMPETITION_27RM.elf --con
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | 0.1 | 2025-10-06 | 因为之前接线乱，导致烧了板子，然后打算底盘重新设计布线。现在就想出两种方案，一是PCB扩展板，二直接洞洞板飞线。PCB扩展板方案尽量早点做完，要不然只能洞洞板飞线了。重新在cubemx设计了引脚，现在就是更新一下引脚接线图。现在一个人干工作量好大 |
+| 0.2 | 2025-10-09 | 完成了底盘扩展板的设计，新增加了CAN |
+
+
+
+
+
