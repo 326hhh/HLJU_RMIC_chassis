@@ -28,7 +28,6 @@ typedef struct
     float cmd_vx;   /* m/s，+x 前进 */
     float cmd_vy;   /* m/s，+y 左移 */
     float cmd_wz;   /* rad/s，逆时针为正 */
-
     /* ---- 测量 ---- */
     float meas_vx, meas_vy, meas_wz;                    /* 正解得到的车体速度 */
     float wheel_rpm_ref[CHASSIS_WHEEL_NUM];             /* 斜坡后的目标轮速 (RPM) */
@@ -61,5 +60,31 @@ const chassis_state_t *chassis_state(void);
 
 /** 底盘库时钟 (ms)，基于 HAL_GetTick，1kHz */
 uint32_t chassis_tick_ms(void);
+
+/* ========================= 调试/整定专用入口 ===============================
+ * 正常跑车只用上面的接口；下面这些是给 chassis_tune 调 PID 用的，
+ * 会绕过运动学与斜坡，直接给四轮下指令。正式固件里保持 CHASSIS_MODE_NORMAL 即可。
+ */
+typedef enum
+{
+    CHASSIS_MODE_NORMAL = 0,    /* 车体速度指令 -> 运动学逆解 -> 斜坡 -> 速度环 */
+    CHASSIS_MODE_OPEN_DUTY,     /* 四轮直接给同一占空比，绕过 PID（开环标定用） */
+    CHASSIS_MODE_WHEEL_REF,     /* 四轮直接给轮速目标，无斜坡（阶跃响应用） */
+} chassis_mode_t;
+
+/** 切换工作模式（切换时会清 PID 积分，避免残留） */
+void chassis_set_mode(chassis_mode_t mode);
+
+/** 模式 2：四轮同占空比 [-1000, +1000]，立即生效 */
+void chassis_set_open_duty(float duty);
+
+/** 模式 3：四轮各自的目标轮速 (RPM)，正=向前滚 */
+void chassis_set_wheel_ref(const float rpm[CHASSIS_WHEEL_NUM]);
+
+/** 整定/自检用：0 = 把 TB6612 STBY 拉低（输出高阻、电机自由滑行），1 = 正常使能 */
+void chassis_driver_enable(int on);
+
+/** 整定用：在线改某一轮的 PI 增益与加速度前馈（会清积分），kff 不动 */
+void chassis_set_wheel_gain(int idx, float kp, float ki, float kacc);
 
 #endif /* USERLIB_CHASSIS_CHASSIS_H */

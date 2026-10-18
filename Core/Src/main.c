@@ -27,8 +27,11 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "chassis.h"
+#include "chassis_config.h"
 #include "chassis_demo.h"
 #include "chassis_debug.h"
+#include "chassis_tune.h"
+#include "can_test.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -104,7 +107,16 @@ int main(void)
   MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
   chassis_init();
-  chassis_demo_init();
+
+  /* 无 CAN 总线参与，CAN 自诊断会往 USART1 打日志污染调参数据，整定期间先不启动 */
+  // can_test_init();
+
+#if CHASSIS_TUNE_ENABLE
+  /* 整定模式：由 chassis_tune 接管四轮并回传实验数据 */
+  chassis_tune_init();
+#else
+  // chassis_demo_init();
+#endif
 
   /* USER CODE END 2 */
 
@@ -112,12 +124,20 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* 1kHz 控制循环：chassis_poll() 内部检测 HAL tick，到点才执行一次 */
     chassis_poll();
-    chassis_demo_poll();
+#if CHASSIS_TUNE_ENABLE
+    chassis_tune_poll();
+#else
     chassis_debug_poll();
+#if CHASSIS_DEMO_ENABLE
+    chassis_demo_poll();
+#endif
+#endif
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* can_test_poll();   CAN：发心跳 + 收帧回显（整定期间关闭） */
   }
   /* USER CODE END 3 */
 }

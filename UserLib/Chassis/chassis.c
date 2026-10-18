@@ -7,6 +7,7 @@
 #include "chassis.h"
 #include "chassis_config.h"
 #include "chassis_math.h"
+#include "chassis_tune.h"
 #include "encoder.h"
 #include "main.h"
 #include "motor.h"
@@ -58,9 +59,16 @@ static motor_t s_motor[CHASSIS_WHEEL_NUM];
 static encoder_t s_enc[CHASSIS_WHEEL_NUM];
 static pid_t s_pid[CHASSIS_WHEEL_NUM];
 static float s_ref_rpm[CHASSIS_WHEEL_NUM];
+static float s_ref_prev[CHASSIS_WHEEL_NUM];     /* 上一周期目标轮速，用于加速度前馈 */
+static float s_kacc[CHASSIS_WHEEL_NUM];         /* 参考加速度前馈系数 */
 static chassis_state_t s_state;
 static uint32_t s_last_tick;
 static bool s_inited;
+
+/* 调试/整定模式状态（正式跑车时恒为 CHASSIS_MODE_NORMAL） */
+static chassis_mode_t s_mode = CHASSIS_MODE_NORMAL;
+static float s_open_duty;                                   /* 模式 2 用的占空比 */
+static float s_ref_override[CHASSIS_WHEEL_NUM];             /* 模式 3 用的轮速目标 */
 
 /* 每轮编码器测量方向归一系数（见 chassis_config.h），只作用于测量值。
  * 电机转向只由 s_bind[] 的 fwd_in1/fwd_in2 决定，两者互不干扰。 */
@@ -75,14 +83,15 @@ typedef struct
 {
     float kp, ki, kd, i_max;
     float kff;      /* 速度前馈：占空比 = PID 输出 + kff * 目标轮速 */
+    float kacc;     /* 参考加速度前馈：+ kacc * d(目标轮速)/dt */
 } pid_gain_t;
 
 static const pid_gain_t s_pid_gain[CHASSIS_WHEEL_NUM] =
 {
-    { CHASSIS_PID_KP_FL, CHASSIS_PID_KI_FL, CHASSIS_PID_KD_FL, CHASSIS_PID_I_MAX_FL, CHASSIS_PID_KFF_FL },
-    { CHASSIS_PID_KP_FR, CHASSIS_PID_KI_FR, CHASSIS_PID_KD_FR, CHASSIS_PID_I_MAX_FR, CHASSIS_PID_KFF_FR },
-    { CHASSIS_PID_KP_BL, CHASSIS_PID_KI_BL, CHASSIS_PID_KD_BL, CHASSIS_PID_I_MAX_BL, CHASSIS_PID_KFF_BL },
-    { CHASSIS_PID_KP_BR, CHASSIS_PID_KI_BR, CHASSIS_PID_KD_BR, CHASSIS_PID_I_MAX_BR, CHASSIS_PID_KFF_BR },
+    { CHASSIS_PID_KP_FL, CHASSIS_PID_KI_FL, CHASSIS_PID_KD_FL, CHASSIS_PID_I_MAX_FL, CHASSIS_PID_KFF_FL, CHASSIS_PID_KACC_FL },
+    { CHASSIS_PID_KP_FR, CHASSIS_PID_KI_FR, CHASSIS_PID_KD_FR, CHASSIS_PID_I_MAX_FR, CHASSIS_PID_KFF_FR, CHASSIS_PID_KACC_FR },
+    { CHASSIS_PID_KP_BL, CHASSIS_PID_KI_BL, CHASSIS_PID_KD_BL, CHASSIS_PID_I_MAX_BL, CHASSIS_PID_KFF_BL, CHASSIS_PID_KACC_BL },
+    { CHASSIS_PID_KP_BR, CHASSIS_PID_KI_BR, CHASSIS_PID_KD_BR, CHASSIS_PID_I_MAX_BR, CHASSIS_PID_KFF_BR, CHASSIS_PID_KACC_BR },
 };
 
 /* ============================= 实现 ======================================== */
@@ -96,9 +105,15 @@ uint32_t chassis_tick_ms(void)
 
 void chassis_init(void)
 {
+#if CHASSIS_DRIVER_DISABLE
+    /* 调试：STBY 拉低 -> 输出高阻，电机不刹车，可以手转 */
+    HAL_GPIO_WritePin(L_STBY_GPIO_Port, L_STBY_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(R_STBY_GPIO_Port, R_STBY_Pin, GPIO_PIN_RESET);
+#else
     /* TB6612 使能 */
     HAL_GPIO_WritePin(L_STBY_GPIO_Port, L_STBY_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(R_STBY_GPIO_Port, R_STBY_Pin, GPIO_PIN_SET);
+#endif
 
     for (int i = 0; i < CHASSIS_WHEEL_NUM; i++)
     {
@@ -108,8 +123,11 @@ void chassis_init(void)
                    b->fwd_in1, b->fwd_in2);
         encoder_start(&s_enc[i], b->enc_htim);
         pid_init(&s_pid[i], s_pid_gain[i].kp, s_pid_gain[i].ki, s_pid_gain[i].kd,
-                 s_pid_gain[i].i_max, CHASSIS_PID_OUT_MAX);
+                 s_pid_gain[i].kff, s_pid_gain[i].i_max, CHASSIS_PID_OUT_MAX,
+                 CHASSIS_PID_D_LPF_TAU_S);
         s_ref_rpm[i] = 0.0f;
+        s_ref_prev[i] = 0.0f;
+        s_kacc[i] = s_pid_gain[i].kacc;
     }
 
     memset(&s_state, 0, sizeof(s_state));
@@ -156,6 +174,54 @@ const chassis_state_t *chassis_state(void)
     return &s_state;
 }
 
+void chassis_driver_enable(int on)
+{
+    GPIO_PinState lv = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
+    HAL_GPIO_WritePin(L_STBY_GPIO_Port, L_STBY_Pin, lv);
+    HAL_GPIO_WritePin(R_STBY_GPIO_Port, R_STBY_Pin, lv);
+}
+
+void chassis_set_mode(chassis_mode_t mode)
+{
+    if (mode != s_mode)
+    {
+        for (int i = 0; i < CHASSIS_WHEEL_NUM; i++)
+        {
+            pid_reset(&s_pid[i]);
+            s_ref_rpm[i] = 0.0f;
+            s_ref_prev[i] = 0.0f;   /* 防止切换瞬间加速度前馈打出巨大尖峰 */
+        }
+        s_mode = mode;
+    }
+}
+
+void chassis_set_open_duty(float duty)
+{
+    s_open_duty = chassis_clampf(duty, -CHASSIS_PID_OUT_MAX, CHASSIS_PID_OUT_MAX);
+}
+
+void chassis_set_wheel_ref(const float rpm[CHASSIS_WHEEL_NUM])
+{
+    for (int i = 0; i < CHASSIS_WHEEL_NUM; i++)
+    {
+        s_ref_override[i] = chassis_clampf(rpm[i], -CHASSIS_MAX_WHEEL_RPM,
+                                           CHASSIS_MAX_WHEEL_RPM);
+    }
+}
+
+void chassis_set_wheel_gain(int idx, float kp, float ki, float kacc)
+{
+    if ((idx < 0) || (idx >= CHASSIS_WHEEL_NUM))
+    {
+        return;
+    }
+    s_pid[idx].kp = kp;
+    s_pid[idx].ki = ki;
+    s_kacc[idx] = kacc;
+    pid_reset(&s_pid[idx]);
+    s_ref_prev[idx] = 0.0f;
+}
+
 /* ============================ 1kHz 控制循环 ================================ */
 
 static void chassis_update(float dt)
@@ -172,18 +238,42 @@ static void chassis_update(float dt)
         s_state.wheel_count[i] = encoder_total(&s_enc[i]);
         s_state.wheel_rpm_meas[i] = s_enc_dir[i] * encoder_speed_rpm(&s_enc[i]);
 
-        /* 3. 轮速限幅 + 斜坡 */
-        kin_rpm[i] = chassis_clampf(kin_rpm[i], -CHASSIS_MAX_WHEEL_RPM,
-                                    CHASSIS_MAX_WHEEL_RPM);
-        s_ref_rpm[i] = chassis_rampf(s_ref_rpm[i], kin_rpm[i],
-                                     CHASSIS_WHEEL_ACCEL_RPM_S, dt);
-        s_state.wheel_rpm_ref[i] = s_ref_rpm[i];
+        /* ---- 调试模式 2：开环直接给占空比（静态标定用，不经过 PID） ---- */
+        if (s_mode == CHASSIS_MODE_OPEN_DUTY)
+        {
+            pid_reset(&s_pid[i]);       /* 保证切回闭环时积分是干净的 */
+            s_ref_rpm[i] = 0.0f;
+            s_state.wheel_rpm_ref[i] = 0.0f;
+            s_state.wheel_duty[i] = s_open_duty;
+            motor_set_duty(&s_motor[i], s_open_duty);
+            continue;
+        }
 
-        /* 4. 速度环：PID + 速度前馈 -> 占空比 -> 电机
-         *    （正输出 = fwd 电平 = 向前滚；前馈按斜坡后的目标轮速给） */
-        float out = pid_calc(&s_pid[i], s_ref_rpm[i],
-                             s_state.wheel_rpm_meas[i], dt)
-                    + s_pid_gain[i].kff * s_ref_rpm[i];
+        /* 3. 目标轮速：正常模式走限幅+斜坡，调试模式直接给 */
+        float ref;
+        if (s_mode == CHASSIS_MODE_WHEEL_REF)
+        {
+            ref = s_ref_override[i];
+            s_ref_rpm[i] = ref;
+        }
+        else
+        {
+            kin_rpm[i] = chassis_clampf(kin_rpm[i], -CHASSIS_MAX_WHEEL_RPM,
+                                        CHASSIS_MAX_WHEEL_RPM);
+            s_ref_rpm[i] = chassis_rampf(s_ref_rpm[i], kin_rpm[i],
+                                         CHASSIS_WHEEL_ACCEL_RPM_S, dt);
+            ref = s_ref_rpm[i];
+        }
+        s_state.wheel_rpm_ref[i] = ref;
+
+        /* 4. 速度环：速度前馈 + 参考加速度前馈 + PI(D) -> 占空比 -> 电机
+         *    加速度前馈让斜坡段所需的额外力矩由前馈给出，积分不用去"抢"，
+         *    否则斜坡结束时积分已经积了一大坨，要靠超调慢慢吐出来。
+         *    （正输出 = fwd 电平 = 向前滚） */
+        float dref = (ref - s_ref_prev[i]) / dt;
+        s_ref_prev[i] = ref;
+        float out = pid_calc(&s_pid[i], ref, s_state.wheel_rpm_meas[i], dt)
+                    + s_kacc[i] * dref;
         out = chassis_clampf(out, -CHASSIS_PID_OUT_MAX, CHASSIS_PID_OUT_MAX);
         s_state.wheel_duty[i] = out;
         motor_set_duty(&s_motor[i], out);
@@ -198,4 +288,9 @@ static void chassis_update(float dt)
     s_state.x += (s_state.meas_vx * c - s_state.meas_vy * s) * dt;
     s_state.y += (s_state.meas_vx * s + s_state.meas_vy * c) * dt;
     s_state.yaw = chassis_wrap_pi(s_state.yaw + s_state.meas_wz * dt);
+
+#if CHASSIS_TUNE_ENABLE
+    /* 6. 整定实验：采样/换相（回调节拍与本控制循环严格同频） */
+    chassis_tune_on_tick(&s_state);
+#endif
 }

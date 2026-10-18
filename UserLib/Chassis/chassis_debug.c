@@ -31,7 +31,7 @@ static uint32_t s_last_send;
 
 static void dbg_transmit(const uint8_t *data, uint16_t len)
 {
-    HAL_UART_Transmit(&huart1, (uint8_t *)data, len, 10u);
+    HAL_UART_Transmit(&huart1, (uint8_t *)data, len, 50u);
 }
 
 #if (CHASSIS_DEBUG_PROTOCOL == CHASSIS_DEBUG_PROTO_JUSTFLOAT)
@@ -67,16 +67,16 @@ static void dbg_send_rawtext(const chassis_state_t *st)
     /* 格式：t=xxxxx | FL rrrr/dddd FR rrrr/dddd BL rrrr/dddd BR rrrr/dddd | yaw=ddddeg
      * rrrr = 实测轮速(RPM，四舍五入), dddd = 输出占空比(千分比) */
     int n = snprintf(line, sizeof(line),
-                     "t=%lu | FL %4d/%4d FR %4d/%4d BL %4d/%4d BR %4d/%4d | yaw=%ddeg\r\n",
+                     "t=%lu | rpm FL %4d FR %4d BL %4d BR %4d | cnt %ld %ld %ld %ld | yaw=%ddeg\r\n",
                      (unsigned long)chassis_tick_ms(),
-                     (int)(st->wheel_rpm_meas[CHASSIS_WHEEL_FL] + (st->wheel_rpm_meas[CHASSIS_WHEEL_FL] >= 0 ? 0.5f : -0.5f)),
-                     (int)st->wheel_duty[CHASSIS_WHEEL_FL],
-                     (int)(st->wheel_rpm_meas[CHASSIS_WHEEL_FR] + (st->wheel_rpm_meas[CHASSIS_WHEEL_FR] >= 0 ? 0.5f : -0.5f)),
-                     (int)st->wheel_duty[CHASSIS_WHEEL_FR],
-                     (int)(st->wheel_rpm_meas[CHASSIS_WHEEL_BL] + (st->wheel_rpm_meas[CHASSIS_WHEEL_BL] >= 0 ? 0.5f : -0.5f)),
-                     (int)st->wheel_duty[CHASSIS_WHEEL_BL],
-                     (int)(st->wheel_rpm_meas[CHASSIS_WHEEL_BR] + (st->wheel_rpm_meas[CHASSIS_WHEEL_BR] >= 0 ? 0.5f : -0.5f)),
-                     (int)st->wheel_duty[CHASSIS_WHEEL_BR],
+                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FL],
+                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FR],
+                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_BL],
+                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_BR],
+                     (long)st->wheel_count[CHASSIS_WHEEL_FL],
+                     (long)st->wheel_count[CHASSIS_WHEEL_FR],
+                     (long)st->wheel_count[CHASSIS_WHEEL_BL],
+                     (long)st->wheel_count[CHASSIS_WHEEL_BR],
                      (int)(st->yaw * 180.0f / CHASSIS_PI));
     (void)n;
     dbg_transmit((const uint8_t *)line, (uint16_t)strlen(line));

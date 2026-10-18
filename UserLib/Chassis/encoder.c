@@ -6,6 +6,23 @@
   */
 #include "encoder.h"
 
+/* 编码器输入数字滤波强度（0=不滤波）。8 = f_DTS/256 采样、连续 8 个一致才认边沿，
+ * 约等于十几微秒的尖峰抑制。电机 PWM 和换相噪声会灌进 A/B 线，不滤波时
+ * 会出现"幽灵计数"（实测 FR 一路 8000 采样里 100+ 次物理不可能的跳变，
+ * 开滤波后归零）。TIM1 在 APB2(168MHz)、TIM3/4/8 在 APB1(84MHz)，
+ * 滤波后采样率仍远高于最高转速下的边沿率，不影响测速。 */
+#define ENC_INPUT_FILTER   8u
+
+static void encoder_apply_filter(TIM_TypeDef *tim)
+{
+    uint32_t ccmr1 = tim->CCMR1;
+
+    ccmr1 &= ~(uint32_t)(TIM_CCMR1_IC1F | TIM_CCMR1_IC2F);
+    ccmr1 |= ((uint32_t)ENC_INPUT_FILTER << 4);     /* IC1F: bits 7:4 */
+    ccmr1 |= ((uint32_t)ENC_INPUT_FILTER << 12);    /* IC2F: bits 15:12 */
+    tim->CCMR1 = ccmr1;
+}
+
 void encoder_start(encoder_t *enc, TIM_HandleTypeDef *htim)
 {
     enc->htim = htim;
@@ -20,6 +37,7 @@ void encoder_start(encoder_t *enc, TIM_HandleTypeDef *htim)
     }
 
     HAL_TIM_Encoder_Start(htim, TIM_CHANNEL_ALL);
+    encoder_apply_filter(htim->Instance);
     enc->last_cnt = (int16_t)(uint16_t)__HAL_TIM_GET_COUNTER(htim);
 }
 
