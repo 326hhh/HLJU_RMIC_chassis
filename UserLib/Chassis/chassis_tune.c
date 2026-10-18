@@ -69,7 +69,8 @@ static void tune_print(const char *str)
     tune_send(str, (uint16_t)strlen(str));
 }
 
-#if ((CHASSIS_TUNE_EXPERIMENT == 2) || (CHASSIS_TUNE_EXPERIMENT == 4))
+#if ((CHASSIS_TUNE_EXPERIMENT == 2) || (CHASSIS_TUNE_EXPERIMENT == 4) || \
+     (CHASSIS_TUNE_EXPERIMENT == 5))
 static int16_t to_i16(float v)
 {
     return (int16_t)(v >= 0.0f ? v + 0.5f : v - 0.5f);
@@ -392,6 +393,88 @@ static void coast_dump(void)
 
 #endif /* CHASSIS_TUNE_EXPERIMENT == 4 */
 
+/* ================== 实验 5：陀螺自旋实测（小陀螺闭环验证） =================
+ * 四段各 2s：静置 -> +自旋速率 -> 停 -> −自旋速率
+ * 每段跑完立刻回传，通道 8 个（小端 int16，dt=1000us）：
+ *   ch0 参考 wz (mrad/s)      ch1 陀螺实测 wz (mrad/s)
+ *   ch2 里程计 wz (mrad/s)    ch3 陀螺积分 yaw (0.01rad)
+ *   ch4 里程计 yaw (0.01rad)  ch5 FL 实测轮速 (RPM)
+ *   ch6 BR 实测轮速 (RPM)     ch7 FL 占空比 (‰)
+ * 关键看：稳态段 |ch1 − ch0| 的均值/纹波，以及停机段 yaw 是否还在爬（零漂）。
+ */
+#if (CHASSIS_TUNE_EXPERIMENT == 5)
+
+#define SPIN_SEG_TICKS   2000u    /* 每段 2s @1kHz */
+#define SPIN_SEG_NUM     4U
+#define SPIN_CH_NUM      8
+
+static int16_t s_spin[SPIN_SEG_TICKS][SPIN_CH_NUM];
+static uint8_t s_seg;
+
+static float spin_seg_ref(uint8_t seg)
+{
+    if (seg == 1U)
+    {
+        return +CHASSIS_SPIN_RATE_RAD_S;
+    }
+    if (seg == 3U)
+    {
+        return -CHASSIS_SPIN_RATE_RAD_S;
+    }
+    return 0.0f;
+}
+
+static void spin_step(const chassis_state_t *st)
+{
+    float wz_ref;
+
+    if (s_tick >= SPIN_SEG_TICKS)
+    {
+        chassis_stop();
+        s_phase = TUNE_PH_DUMP;
+        return;
+    }
+
+    wz_ref = spin_seg_ref(s_seg);
+    chassis_set_velocity(0.0f, 0.0f, wz_ref);   /* 正常模式：走陀螺外环 */
+
+    s_spin[s_tick][0] = to_i16(wz_ref * 1000.0f);
+    s_spin[s_tick][1] = to_i16(st->imu_wz * 1000.0f);
+    s_spin[s_tick][2] = to_i16(st->meas_wz * 1000.0f);
+    s_spin[s_tick][3] = to_i16(st->imu_yaw * 100.0f);
+    s_spin[s_tick][4] = to_i16(st->yaw * 100.0f);
+    s_spin[s_tick][5] = to_i16(st->wheel_rpm_meas[CHASSIS_WHEEL_FL]);
+    s_spin[s_tick][6] = to_i16(st->wheel_rpm_meas[CHASSIS_WHEEL_BR]);
+    s_spin[s_tick][7] = to_i16(st->wheel_duty[CHASSIS_WHEEL_FL]);
+}
+
+static void spin_dump(void)
+{
+    char line[80];
+    uint32_t n = (uint32_t)SPIN_SEG_TICKS * SPIN_CH_NUM * sizeof(int16_t);
+    uint32_t sum = 0;
+    const uint8_t *p = (const uint8_t *)s_spin;
+
+    for (uint32_t k = 0; k < n; k++)
+    {
+        sum += p[k];
+    }
+
+    snprintf(line, sizeof(line), "SET idx=%u spin ref=%d mrad_s imu=%d\r\n",
+             (unsigned)s_seg,
+             (int)(spin_seg_ref(s_seg) * 1000.0f),
+             (int)(chassis_state()->imu_online));
+    tune_print(line);
+    snprintf(line, sizeof(line), "STEP_BEGIN n=%u ch=%u dt_us=1000\r\n",
+             (unsigned)SPIN_SEG_TICKS, (unsigned)SPIN_CH_NUM);
+    tune_print(line);
+    tune_send_block((const void *)s_spin, n);
+    snprintf(line, sizeof(line), "\r\nSTEP_END cksum=%lu\r\n", (unsigned long)sum);
+    tune_print(line);
+}
+
+#endif /* CHASSIS_TUNE_EXPERIMENT == 5 */
+
 /* =============================== 调度 ===================================== */
 
 void chassis_tune_init(void)
@@ -425,6 +508,11 @@ void chassis_tune_init(void)
         chassis_set_mode(CHASSIS_MODE_WHEEL_REF);
         chassis_set_wheel_ref(zero);
     }
+#elif (CHASSIS_TUNE_EXPERIMENT == 5)
+    /* 走正常模式，让陀螺外环（chassis_gyro）真正参与，测的才是实际会跑的闭环 */
+    chassis_set_mode(CHASSIS_MODE_NORMAL);
+    chassis_stop();
+    s_seg = 0;
 #endif
 }
 
@@ -445,6 +533,8 @@ void chassis_tune_on_tick(const chassis_state_t *st)
             tune_print("\r\nTUNE_START exp=4 (coast-down proof)\r\n");
 #elif (CHASSIS_TUNE_EXPERIMENT == 2)
             tune_print("\r\nTUNE_START exp=2 (closed-loop step sweep)\r\n");
+#elif (CHASSIS_TUNE_EXPERIMENT == 5)
+            tune_print("\r\nTUNE_START exp=5 (gyro spin test)\r\n");
 #endif
         }
         return;
@@ -466,6 +556,9 @@ void chassis_tune_on_tick(const chassis_state_t *st)
     s_tick++;
 #elif (CHASSIS_TUNE_EXPERIMENT == 2)
     step_step(st);
+    s_tick++;
+#elif (CHASSIS_TUNE_EXPERIMENT == 5)
+    spin_step(st);
     s_tick++;
 #endif
 }
@@ -501,6 +594,19 @@ void chassis_tune_poll(void)
         }
         s_tick = 0;
         s_phase = TUNE_PH_RUN;
+    }
+    else
+    {
+        tune_print("TUNE_END\r\n");
+    }
+#elif (CHASSIS_TUNE_EXPERIMENT == 5)
+    spin_dump();
+
+    s_seg++;
+    if (s_seg < SPIN_SEG_NUM)
+    {
+        s_tick = 0;
+        s_phase = TUNE_PH_RUN;      /* 接着跑下一段 */
     }
     else
     {

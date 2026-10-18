@@ -49,11 +49,14 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     UserLib/Chassis/chassis.c
     UserLib/Chassis/chassis_debug.c
     UserLib/Chassis/chassis_demo.c
+    UserLib/Chassis/chassis_gyro.c
     UserLib/Chassis/chassis_tune.c
     UserLib/Chassis/encoder.c
     UserLib/Chassis/mecanum.c
     UserLib/Chassis/motor.c
     UserLib/Chassis/pid.c
+    UserLib/IMU/imu.c
+    UserLib/IMU/lsm6dsv16x_reg.c
 )
 
 # Add include paths
@@ -61,6 +64,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     UserLib/Chassis
     UserLib/Comm
+    UserLib/IMU
 )
 
 # Add project symbols (macros)

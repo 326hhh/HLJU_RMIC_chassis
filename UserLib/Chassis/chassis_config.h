@@ -110,6 +110,43 @@
 #define CHASSIS_ENC_DIR_BL           +1
 #define CHASSIS_ENC_DIR_BR           -1
 
+/* ======================= 陀螺偏航闭环（小陀螺 / 云台跟随） ==================
+ * 用底盘 IMU（LSM6DSV16X）实测的 wz 给运动学打补丁：
+ *   wz_out = clamp(wz_ref + Kp·e + Ki·∫e, ±MAX_WZ)，e = wz_ref − wz_gyro
+ * 详见 chassis_gyro.c 顶部注释与 docs/CHASSIS_LIBRARY.md §17。
+ *
+ * 调参直觉：
+ *   - 自旋速率稳态差得多、要好几百毫秒才拉回来 -> 加 KP（0.2 一档）
+ *   - 稳态始终差固定一小截（打滑补不回来）      -> 加 KI、或加大 I_MAX
+ *   - 自旋起步冲过头 / 落地后抖                  -> 减 KP
+ */
+/** 1 = 启用陀螺外环（IMU 没插也能编译，运行时自动退回纯运动学） */
+#define CHASSIS_GYRO_ENABLE          1
+/** 上电默认模式：0=OFF 1=RATE 2=SPIN 3=YAW_TARGET（见 chassis_gyro.h） */
+#define CHASSIS_GYRO_MODE_DEFAULT    1
+/** 比例增益 (rad/s 修正 / rad/s 误差) */
+#define CHASSIS_GYRO_KP              0.60f
+/** 积分增益 */
+#define CHASSIS_GYRO_KI              4.00f
+/** 积分项限幅 (rad/s·s)，经 KI 后就是积分项能给出的最大修正 */
+#define CHASSIS_GYRO_I_MAX           0.40f
+/** 外环「能力带」(rad/s)：误差超过它就是物理上还没追上（起步斜坡/急变），
+ *  此时冻结 P 与 I，交给轮速斜坡处理，避免起步瞬间把 wz 顶到限幅。
+ *  必须大于最大预期打滑误差：30% 打滑 @3.5rad/s ≈ 1.05rad/s，所以给 2.0 */
+#define CHASSIS_GYRO_I_BAND          2.00f
+/** PI 修正量总限幅 (rad/s)，防止外环把轮子推爆 */
+#define CHASSIS_GYRO_CORR_MAX        1.50f
+/** 外环输出 wz 限幅 (rad/s)。比用户指令上限 CHASSIS_MAX_WZ_RAD_S 松一点，
+ *  因为自旋要补偿打滑：物理极限 wz = 250RPM × 0.10472 × 0.04 / 0.2201 ≈ 4.76rad/s */
+#define CHASSIS_GYRO_WZ_LIMIT        4.60f
+/** 角度模式（云台跟随）比例增益 (rad/s 每 rad 误差)，误差 1rad 给 6rad/s */
+#define CHASSIS_GYRO_KP_ANGLE        6.00f
+/** 静止判定：三轴角速度都小于该值 (rad/s) 才认为车停着 */
+#define CHASSIS_GYRO_STATIC_GYRO     0.10f
+/** 小陀螺默认自旋速率 (rad/s，逆时针为正)。3.5rad/s ≈ 200°/s，
+ *  此时四轮约 184RPM（上限 250RPM），留出平移与修正余量 */
+#define CHASSIS_SPIN_RATE_RAD_S      3.50f
+
 /* ============================ 调试输出 ===================================== */
 /** 1=通过 USART1(PA9/PA10, 115200-8-N-1) 每 250ms 输出调试数据；
  *  比赛/正式使用时改 0 关闭 */
@@ -118,10 +155,10 @@
 /** 调试协议选择（VOFA+ 数据引擎要选对应的）：
  *  1 = RawData 文本，终端可直接读，人眼友好
  *  2 = JustFloat 二进制，小端 float + 帧尾 00 00 80 7F，给 VOFA+ 画波形
- *  通道定义（JustFloat, 共 13 通道，见 docs/CHASSIS_LIBRARY.md §6.6） */
+ *  通道定义（JustFloat, 共 17 通道，见 docs/CHASSIS_LIBRARY.md §6.6） */
 #define CHASSIS_DEBUG_PROTO_RAWTEXT      1
 #define CHASSIS_DEBUG_PROTO_JUSTFLOAT    2
-#define CHASSIS_DEBUG_PROTOCOL           CHASSIS_DEBUG_PROTO_JUSTFLOAT
+#define CHASSIS_DEBUG_PROTOCOL           CHASSIS_DEBUG_PROTO_RAWTEXT
 
 /* =========================== PID 整定实验开关 ===============================
  * 整定期间打开：chassis_tune 会接管四个轮子（chassis_poll 的控制节拍照常跑），
@@ -134,6 +171,8 @@
  *       1kHz 采样存 RAM 后一次性回传；chassis_tune.c 的 s_gain_sets[] 可一次扫多组
  *   3 = 开环转向目检：+300‰/−300‰ 循环，用来人眼确认四轮转向
  *   4 = 惯性滑行自证：驱动后断开 STBY 与 PWM，看编码器随惯性平滑衰减
+ *   5 = 陀螺自旋实测：静置→+自旋→停→−自旋 四段，1kHz 采样陀螺/里程计/轮速
+ *       -> 看自旋速率稳态误差、纹波、积分漂移（调 CHASSIS_GYRO_* 用）
  */
 #define CHASSIS_TUNE_ENABLE          0
 #define CHASSIS_TUNE_EXPERIMENT      2

@@ -6,9 +6,11 @@
   */
 #include "chassis.h"
 #include "chassis_config.h"
+#include "chassis_gyro.h"
 #include "chassis_math.h"
 #include "chassis_tune.h"
 #include "encoder.h"
+#include "imu.h"
 #include "main.h"
 #include "motor.h"
 #include "pid.h"
@@ -69,6 +71,8 @@ static bool s_inited;
 static chassis_mode_t s_mode = CHASSIS_MODE_NORMAL;
 static float s_open_duty;                                   /* 模式 2 用的占空比 */
 static float s_ref_override[CHASSIS_WHEEL_NUM];             /* 模式 3 用的轮速目标 */
+static float s_kin_rpm[CHASSIS_WHEEL_NUM];                  /* 本拍逆解目标（未斜坡） */
+static bool s_driver_on = true;                             /* TB6612 STBY 状态 */
 
 /* 每轮编码器测量方向归一系数（见 chassis_config.h），只作用于测量值。
  * 电机转向只由 s_bind[] 的 fwd_in1/fwd_in2 决定，两者互不干扰。 */
@@ -109,6 +113,7 @@ void chassis_init(void)
     /* 调试：STBY 拉低 -> 输出高阻，电机不刹车，可以手转 */
     HAL_GPIO_WritePin(L_STBY_GPIO_Port, L_STBY_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(R_STBY_GPIO_Port, R_STBY_Pin, GPIO_PIN_RESET);
+    s_driver_on = false;            /* 电机没使能，陀螺外环也不该介入 */
 #else
     /* TB6612 使能 */
     HAL_GPIO_WritePin(L_STBY_GPIO_Port, L_STBY_Pin, GPIO_PIN_SET);
@@ -132,6 +137,11 @@ void chassis_init(void)
 
     memset(&s_state, 0, sizeof(s_state));
     s_last_tick = HAL_GetTick();
+
+    /* IMU（LSM6DSV16X）：探测 + 配置 + 上电静止零偏标定，约 0.7s。
+     * IMU 不在线也不会卡住底盘，陀螺外环自动退回纯运动学。 */
+    chassis_gyro_init();
+
     s_inited = true;
 }
 
@@ -179,6 +189,23 @@ void chassis_driver_enable(int on)
     GPIO_PinState lv = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
     HAL_GPIO_WritePin(L_STBY_GPIO_Port, L_STBY_Pin, lv);
     HAL_GPIO_WritePin(R_STBY_GPIO_Port, R_STBY_Pin, lv);
+    s_driver_on = (on != 0);
+}
+
+void chassis_spin(float rad_s)
+{
+    if (rad_s == 0.0f)
+    {
+        chassis_gyro_set_mode(CHASSIS_GYRO_MODE_RATE);   /* 退出自旋，回到角速度闭环 */
+        return;
+    }
+    chassis_gyro_set_spin_rate(rad_s);
+    chassis_gyro_set_mode(CHASSIS_GYRO_MODE_SPIN);
+}
+
+uint8_t chassis_imu_online(void)
+{
+    return imu_is_online() ? 1U : 0U;
 }
 
 void chassis_set_mode(chassis_mode_t mode)
@@ -227,13 +254,45 @@ void chassis_set_wheel_gain(int idx, float kp, float ki, float kacc)
 static void chassis_update(float dt)
 {
     float kin_rpm[CHASSIS_WHEEL_NUM];
+    float wz_eff;
+    bool active;
+    bool ramping = false;
+    bool wheels_idle = true;
 
-    /* 1. 运动学逆解：车体指令 -> 轮速指令 */
-    mecanum_inverse(s_state.cmd_vx, s_state.cmd_vy, s_state.cmd_wz, kin_rpm);
+    /* 0. IMU 采样：内部按 IMU_GYRO_PERIOD_MS 节拍限速，没到点立刻返回 */
+    imu_poll(HAL_GetTick());
+
+    /* 陀螺外环的介入条件：正常模式 + 驱动使能（开环标定/STBY 拉低时不介入） */
+    active = (s_mode == CHASSIS_MODE_NORMAL) && s_driver_on;
+
+    /* 斜坡是否还在爬：用上一拍的「实际轮速目标 vs 逆解目标」判断。
+     * 爬坡期间外环冻结积分，否则积分会攒一大坨，斜坡结束再吐出来 -> 自旋冲过头 */
+    for (int i = 0; i < CHASSIS_WHEEL_NUM; i++)
+    {
+        if (fabsf(s_ref_rpm[i] - s_kin_rpm[i]) > 0.5f)
+        {
+            ramping = true;
+        }
+        if (fabsf(s_state.wheel_rpm_meas[i]) > 5.0f)
+        {
+            wheels_idle = false;
+        }
+    }
+
+    /* 1. 陀螺外环：用户 wz / 自旋速率 / 角度环 -> 实测 wz 修正 -> 最终 wz */
+    wz_eff = chassis_gyro_update(s_state.cmd_wz, dt, active, ramping, wheels_idle);
+
+    /* 2. 运动学逆解：车体速度 -> 轮速指令（含限幅，供下一步判断斜坡） */
+    mecanum_inverse(s_state.cmd_vx, s_state.cmd_vy, wz_eff, kin_rpm);
+    for (int i = 0; i < CHASSIS_WHEEL_NUM; i++)
+    {
+        s_kin_rpm[i] = chassis_clampf(kin_rpm[i], -CHASSIS_MAX_WHEEL_RPM,
+                                      CHASSIS_MAX_WHEEL_RPM);
+    }
 
     for (int i = 0; i < CHASSIS_WHEEL_NUM; i++)
     {
-        /* 2. 测量：编码器采样 + 滑动窗口测速 + 方向归一 */
+        /* 3. 测量：编码器采样 + 滑动窗口测速 + 方向归一 */
         encoder_update(&s_enc[i]);
         s_state.wheel_count[i] = encoder_total(&s_enc[i]);
         s_state.wheel_rpm_meas[i] = s_enc_dir[i] * encoder_speed_rpm(&s_enc[i]);
@@ -249,7 +308,7 @@ static void chassis_update(float dt)
             continue;
         }
 
-        /* 3. 目标轮速：正常模式走限幅+斜坡，调试模式直接给 */
+        /* 4. 目标轮速：正常模式走限幅+斜坡，调试模式直接给 */
         float ref;
         if (s_mode == CHASSIS_MODE_WHEEL_REF)
         {
@@ -258,15 +317,13 @@ static void chassis_update(float dt)
         }
         else
         {
-            kin_rpm[i] = chassis_clampf(kin_rpm[i], -CHASSIS_MAX_WHEEL_RPM,
-                                        CHASSIS_MAX_WHEEL_RPM);
-            s_ref_rpm[i] = chassis_rampf(s_ref_rpm[i], kin_rpm[i],
+            s_ref_rpm[i] = chassis_rampf(s_ref_rpm[i], s_kin_rpm[i],
                                          CHASSIS_WHEEL_ACCEL_RPM_S, dt);
             ref = s_ref_rpm[i];
         }
         s_state.wheel_rpm_ref[i] = ref;
 
-        /* 4. 速度环：速度前馈 + 参考加速度前馈 + PI(D) -> 占空比 -> 电机
+        /* 5. 速度环：速度前馈 + 参考加速度前馈 + PI(D) -> 占空比 -> 电机
          *    加速度前馈让斜坡段所需的额外力矩由前馈给出，积分不用去"抢"，
          *    否则斜坡结束时积分已经积了一大坨，要靠超调慢慢吐出来。
          *    （正输出 = fwd 电平 = 向前滚） */
@@ -279,7 +336,7 @@ static void chassis_update(float dt)
         motor_set_duty(&s_motor[i], out);
     }
 
-    /* 5. 运动学正解 + 里程计积分 */
+    /* 6. 运动学正解 + 里程计积分 */
     mecanum_forward(s_state.wheel_rpm_meas,
                     &s_state.meas_vx, &s_state.meas_vy, &s_state.meas_wz);
 
@@ -288,6 +345,15 @@ static void chassis_update(float dt)
     s_state.x += (s_state.meas_vx * c - s_state.meas_vy * s) * dt;
     s_state.y += (s_state.meas_vx * s + s_state.meas_vy * c) * dt;
     s_state.yaw = chassis_wrap_pi(s_state.yaw + s_state.meas_wz * dt);
+
+    /* 7. IMU 状态镜像（调试输出/上层逻辑只读） */
+    {
+        const imu_state_t *imu = imu_state();
+        s_state.imu_wz = imu->gyro_lpf[2];
+        s_state.imu_yaw = imu->yaw_rad;
+        s_state.wz_eff = wz_eff;
+        s_state.imu_online = imu->online ? 1U : 0U;
+    }
 
 #if CHASSIS_TUNE_ENABLE
     /* 6. 整定实验：采样/换相（回调节拍与本控制循环严格同频） */

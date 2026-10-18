@@ -6,6 +6,7 @@
   */
 #include "chassis_demo.h"
 #include "chassis.h"
+#include "chassis_config.h"
 #include "chassis_math.h"
 
 #include <math.h>
@@ -19,12 +20,14 @@ typedef enum
     DEMO_BACKWARD,          /* 后退 0.5 m/s x 2s */
     DEMO_STRAFE_RIGHT,      /* 右移 0.4 m/s x 2s */
     DEMO_ROTATE_CW,         /* 原地顺时针转回 90°（里程计闭环） */
+    DEMO_SPIN,              /* 小陀螺：陀螺闭环自旋 3s */
     DEMO_HOLD,              /* 静止 3s 后重来 */
 } demo_phase_t;
 
 #define DEMO_STARTUP_MS    1500u
 #define DEMO_MOVE_MS       2000u
 #define DEMO_HOLD_MS       3000u
+#define DEMO_SPIN_MS       3000u
 #define DEMO_ROTATE_RAD_S  1.57f
 #define DEMO_YAW_TARGET    (CHASSIS_PI / 2.0f)     /* 90° */
 
@@ -117,6 +120,17 @@ void chassis_demo_poll(void)
         yaw_delta = chassis_wrap_pi(st->yaw - s_yaw_entry);
         if (fabsf(yaw_delta) >= DEMO_YAW_TARGET)
         {
+            demo_move_to(now, DEMO_SPIN);
+        }
+        break;
+
+    case DEMO_SPIN:
+        /* 小陀螺：恒定角速度自旋，由陀螺闭环保证转速 */
+        chassis_spin(CHASSIS_SPIN_RATE_RAD_S);
+        if (now - s_phase_start >= DEMO_SPIN_MS)
+        {
+            chassis_spin(0.0f);         /* 退出自旋，回角速度闭环 */
+            chassis_stop();
             demo_move_to(now, DEMO_HOLD);
         }
         break;

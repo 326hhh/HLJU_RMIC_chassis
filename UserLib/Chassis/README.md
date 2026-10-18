@@ -177,5 +177,6 @@ chassis_set_velocity(vx, vy, wz)          ← 指令入口，内部限幅
 | 已知限制与后续计划 | §13 |
 | CAN 通信验证 | §15（另见 `UserLib/Comm/README.md`） |
 | 上位机 Jetson `~/gimbal` | §16 |
-| 版本记录 | §17 |
+| IMU（LSM6DSV16X）与陀螺偏航闭环 / 小陀螺 | §17；驱动本身见 `../IMU/README.md` |
+| 版本记录 | §18 |
 | 整定数据解析脚本 | `../../tools/step_analysis.py` |

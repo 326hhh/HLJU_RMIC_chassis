@@ -1,8 +1,8 @@
 # HLJU_RMIC_chassis
 黑大2026校内赛小车底盘控制代码
 
-STM32F407VGTx + TB6612 + 麦轮底盘，编码器测速闭环 PID。
-用户代码在 `UserLib/Chassis/`，接口说明见 [docs/CHASSIS_LIBRARY.md](docs/CHASSIS_LIBRARY.md)。
+STM32F407VGTx + TB6612 + 麦轮底盘，编码器测速闭环 PID + IMU（LSM6DSV16X）陀螺偏航闭环（小陀螺）。
+用户代码在 `UserLib/Chassis/` 与 `UserLib/IMU/`，接口说明见 [docs/CHASSIS_LIBRARY.md](docs/CHASSIS_LIBRARY.md)。
 
 ## 目录结构
 
@@ -13,15 +13,17 @@ INTRA_SCHOOL_COMPETITION_27RM
 ├── CMakeLists.txt
 ├── README.md                   
 ├── UserLib                                              # 用户代码库
-│   └── Chassis                                          # 底盘代码
+│   └── Chassis                                          # 底盘代码（运动学/PID/陀螺外环）
 │   └── Comm                                             # 通信代码      
+│   └── IMU                                              # LSM6DSV16X 驱动与姿态处理
 ├── docs                                                 # 文档
 │   └── CHASSIS_LIBRARY.md                               # AI修改代码的文档  
 ├── hardware                                             # 硬件相关
 │   └── 底盘扩展板原理图_2026-10-09.pdf                     # 底盘扩展板原理图
 ├── test_data                                            # 调参数据                                       
 ├── tools                                                # 工具
-│   └── step_analysis.py                                 # 调地盘直流减速电机速度环工具
+│   ├── step_analysis.py                                 # 调底盘直流减速电机速度环工具
+│   └── spin_analysis.py                                 # 陀螺自旋实验（小陀螺）数据解析
 ```
 
 ## 接线
@@ -89,12 +91,21 @@ A为前轮，B为后轮，L为左轮，R为右轮。TB6612左右分布。
 
 波特率 115200，8位数据位，1位停止位，无校验位。
 
-### IIC
+### IIC（IMU）
 
 | IIC | 引脚 |
 | --- | --- |
 | IIC1_SCL | PB6 |
 | IIC1_SDA | PB7 |
+
+插的是正点原子 ATK-MS6DSV（LSM6DSV16X）模块，平放（丝印 X 指车头、Y 指车左、Z 向上）。
+
+扩展板 H5 出厂时 SDA / SCL 与模块是**交叉**的（2026-10-18 实测确认，已飞线改正）。
+现在走**硬件 I2C1 400 kHz**（`IMU_USE_SOFT_I2C=0`），实测一次读 213 µs、采样 500 Hz。
+代码里另有一套软件 I2C 后端（`IMU_USE_SOFT_I2C=1`，SCL=PB7 / SDA=PB6）作兜底，
+换到同样交叉的板子时改一个宏就能跑（那套实测 351 µs / 500 Hz）。
+模块 INT 不用（纯轮询 DATA_READY 不看中断）；SA0 由扩展板决定地址 → 代码对 0x6A / 0x6B 自动探测。
+**I2C1 建议在 CubeMX 里改成 Fast Mode 400 kHz**（当前 100 kHz 时代码自动把陀螺采样放宽到 3 ms）。
 
 ### CAN
 
@@ -124,6 +135,7 @@ pyocd flash -t stm32f407vgtx build/Debug/INTRA_SCHOOL_COMPETITION_27RM.elf --con
 | 0.1 | 2025-10-06 | 地盘步线改用主控板和扩展板的方式，修改了一些引脚 |
 | 0.2 | 2025-10-09 | 完成了底盘扩展板的设计，新增加了CAN |
 | 0.3 | 2025-10-18 | 调完了地盘PID的速度环 |
+| 0.4 | 2026-10-18 | 加入 IMU ，但没有在地上跑来调参 |
 
 
 

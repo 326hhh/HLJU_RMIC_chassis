@@ -5,11 +5,13 @@
   *          - RawData 文本（人眼直读）
   *          - JustFloat 二进制（VOFA+ 画波形，小端 float + 帧尾 00 00 80 7F）
   *
-  * JustFloat 通道表（CH_COUNT = 13）：
+  * JustFloat 通道表（CH_COUNT = 17）：
   *   ch0~3  : 目标轮速 ref (FL FR BL BR, RPM)
   *   ch4~7  : 实测轮速 meas (FL FR BL BR, RPM)
   *   ch8~11 : 输出占空比 duty (FL FR BL BR, 千分比)
   *   ch12   : 里程计 yaw (deg)
+ *   ch13   : 陀螺实测 wz (rad/s)        ch14 : 陀螺积分 yaw (deg)
+ *   ch15   : 实际下发 wz_eff (rad/s)    ch16 : IMU 在线 (0/1)
   ******************************************************************************
   */
 #include "chassis_debug.h"
@@ -17,6 +19,7 @@
 #include "chassis.h"
 #include "chassis_config.h"
 #include "chassis_math.h"
+#include "imu.h"
 #include "usart.h"
 
 #include <stdio.h>
@@ -25,7 +28,7 @@
 #if CHASSIS_DEBUG_ENABLE
 
 #define DEBUG_PERIOD_MS     250u
-#define DEBUG_CH_NUM        13
+#define DEBUG_CH_NUM        17
 
 static uint32_t s_last_send;
 
@@ -51,6 +54,10 @@ static void dbg_send_justfloat(const chassis_state_t *st)
         ch[8 + i] = st->wheel_duty[i];              /* ch8~11 占空比   */
     }
     ch[12] = st->yaw * 180.0f / CHASSIS_PI;         /* ch12   yaw(deg) */
+    ch[13] = st->imu_wz;                            /* ch13   陀螺 wz (rad/s) */
+    ch[14] = st->imu_yaw * 180.0f / CHASSIS_PI;     /* ch14   陀螺积分 yaw(deg) */
+    ch[15] = st->wz_eff;                            /* ch15   下发 wz (rad/s) */
+    ch[16] = (float)st->imu_online;                 /* ch16   IMU 在线 */
 
     /* Cortex-M 为小端，直接按字节拷贝即为小端 float */
     memcpy(frame, ch, sizeof(ch));
@@ -60,25 +67,55 @@ static void dbg_send_justfloat(const chassis_state_t *st)
 
 #else
 
+/** 定点格式化 ±d.ddd（nano printf 没开浮点，不能用 %f） */
+static void dbg_fmt3(char *dst, size_t sz, float v)
+{
+    int neg = (v < 0.0f);
+    float a = neg ? -v : v;
+    int whole = (int)a;
+    int frac = (int)((a - (float)whole) * 1000.0f + 0.5f);
+
+    if (frac >= 1000)
+    {
+        frac = 0;
+        whole += 1;
+    }
+    (void)snprintf(dst, sz, "%c%d.%03d", neg ? '-' : '+', whole, frac);
+}
+
 static void dbg_send_rawtext(const chassis_state_t *st)
 {
-    char line[128];
+    char line[240];
+    char s_gz[16];
+    char s_wz[16];
 
-    /* 格式：t=xxxxx | FL rrrr/dddd FR rrrr/dddd BL rrrr/dddd BR rrrr/dddd | yaw=ddddeg
+    dbg_fmt3(s_gz, sizeof(s_gz), st->imu_wz);
+    dbg_fmt3(s_wz, sizeof(s_wz), st->wz_eff);
+
+    /* 格式：t=xxxxx | FL rrrr/dddd ... | yaw=ddddeg | imu ok gz=+0.123 iyaw=+12deg wz=+0.456
      * rrrr = 实测轮速(RPM，四舍五入), dddd = 输出占空比(千分比) */
-    int n = snprintf(line, sizeof(line),
-                     "t=%lu | rpm FL %4d FR %4d BL %4d BR %4d | cnt %ld %ld %ld %ld | yaw=%ddeg\r\n",
-                     (unsigned long)chassis_tick_ms(),
-                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FL],
-                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FR],
-                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_BL],
-                     (int)st->wheel_rpm_meas[CHASSIS_WHEEL_BR],
-                     (long)st->wheel_count[CHASSIS_WHEEL_FL],
-                     (long)st->wheel_count[CHASSIS_WHEEL_FR],
-                     (long)st->wheel_count[CHASSIS_WHEEL_BL],
-                     (long)st->wheel_count[CHASSIS_WHEEL_BR],
-                     (int)(st->yaw * 180.0f / CHASSIS_PI));
-    (void)n;
+    (void)snprintf(line, sizeof(line),
+                   "t=%lu | rpm FL %4d FR %4d BL %4d BR %4d | cnt %ld %ld %ld %ld | "
+                   "yaw=%ddeg | imu %s gz=%s iyaw=%ddeg wz=%s | ac=%d,%d,%d us=%d hz=%d\r\n",
+                   (unsigned long)chassis_tick_ms(),
+                   (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FL],
+                   (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FR],
+                   (int)st->wheel_rpm_meas[CHASSIS_WHEEL_BL],
+                   (int)st->wheel_rpm_meas[CHASSIS_WHEEL_BR],
+                   (long)st->wheel_count[CHASSIS_WHEEL_FL],
+                   (long)st->wheel_count[CHASSIS_WHEEL_FR],
+                   (long)st->wheel_count[CHASSIS_WHEEL_BL],
+                   (long)st->wheel_count[CHASSIS_WHEEL_BR],
+                   (int)(st->yaw * 180.0f / CHASSIS_PI),
+                   st->imu_online ? "ok" : "--",
+                   s_gz,
+                   (int)(st->imu_yaw * 180.0f / CHASSIS_PI),
+                   s_wz,
+                   (int)(imu_state()->accel_mps2[0] * 100.0f),
+                   (int)(imu_state()->accel_mps2[1] * 100.0f),
+                   (int)(imu_state()->accel_mps2[2] * 100.0f),
+                   (int)imu_state()->read_us,
+                   (int)imu_state()->sample_hz);
     dbg_transmit((const uint8_t *)line, (uint16_t)strlen(line));
 }
 

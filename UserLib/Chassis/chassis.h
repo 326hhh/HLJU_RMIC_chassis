@@ -38,6 +38,12 @@ typedef struct
     /* ---- 里程计（相对上电位姿） ---- */
     float x, y;     /* m */
     float yaw;      /* rad，逆时针为正 */
+
+    /* ---- IMU / 陀螺外环 ---- */
+    float imu_wz;       /* 陀螺实测 wz (rad/s，已去零偏、低通) */
+    float imu_yaw;      /* 陀螺积分偏航角 (rad，-PI..PI) */
+    float wz_eff;       /* 陀螺外环输出、实际用于运动学逆解的 wz (rad/s) */
+    uint8_t imu_online; /* 1 = IMU 在线且配置成功 */
 } chassis_state_t;
 
 /** 初始化：绑定电机/编码器、启动 PWM 与编码器、置高 STBY */
@@ -60,6 +66,15 @@ const chassis_state_t *chassis_state(void);
 
 /** 底盘库时钟 (ms)，基于 HAL_GetTick，1kHz */
 uint32_t chassis_tick_ms(void);
+
+/* ============================ IMU / 小陀螺 =================================
+ * 更细的控制（云台跟随角度环、模式切换、自旋速率）在 chassis_gyro.h 里。
+ */
+/** 小陀螺：以指定角速度原地自旋 (rad/s，逆时针为正)。传 0 退出自旋回到角速度闭环 */
+void chassis_spin(float rad_s);
+
+/** IMU 是否在线（1 = 陀螺外环可用） */
+uint8_t chassis_imu_online(void);
 
 /* ========================= 调试/整定专用入口 ===============================
  * 正常跑车只用上面的接口；下面这些是给 chassis_tune 调 PID 用的，

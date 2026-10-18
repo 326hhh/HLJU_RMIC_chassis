@@ -17,6 +17,8 @@ test_data/*.csv
 
 # 调参过程记录（tune_runs/：逐轮标定、扫频、阶跃的原始 log 与截图，只本地留档）
 test_data/tune_runs/
+# 陀螺自旋实测（spin_runs/：实验 5 的原始串口抓取）
+test_data/spin_runs/
 
 # ---- 硬件资料（hardware/：嘉立创EDA 工程与导出件）----
 # 工程/文档的自动备份目录：LCEDA 会在工程旁生成 <名称>_backup/，内含按小时存的
