@@ -26,8 +26,17 @@
 #define IMU_PROBE_BOTH_ADDR     1
 /** 单次 I2C 事务超时 (ms)。400kHz 下 6 字节 <1ms，给 3ms 足够 */
 #define IMU_I2C_TIMEOUT_MS      3U
-/** 连续错误达到该次数就尝试重新初始化 I2C 外设（总线卡死恢复） */
+/** 连续错误达到该次数就尝试解锁总线 + 重新初始化 I2C 外设 */
 #define IMU_ERR_RECOVER_COUNT   5U
+/** 连续错误达到该次数就判「IMU 掉线」：外环退回纯运动学，不再用陈旧数据。
+ *  500Hz 下 10 次 = 20ms，速率环等得起 */
+#define IMU_ERR_STALE_COUNT     10U
+/** 两次总线恢复之间的最小间隔 (ms)，避免刷屏式 DeInit/Init */
+#define IMU_RECOVER_MIN_MS      100U
+/** 硬件 I2C 的引脚（解锁总线时要当 GPIO 用；软硬件两种模式都靠它打时钟） */
+#define IMU_HW_PORT             GPIOB
+#define IMU_HW_PIN_SCL          GPIO_PIN_6
+#define IMU_HW_PIN_SDA          GPIO_PIN_7
 
 /* ============================ 软件 I2C 兜底 ================================
  * 2026-10-18 实测发现：扩展板 H5 座子上的 SDA / SCL 与 ATK-MS6DSV 模块的

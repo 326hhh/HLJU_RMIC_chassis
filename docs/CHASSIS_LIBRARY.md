@@ -1,13 +1,16 @@
 # 底盘基础库设计文档（Chassis Library）
 
 > 本文档是 `UserLib/Chassis/` 底盘基础库的**唯一权威说明**，
-> 并同时收录 **CAN 通信验证**（§15）与**上位机正式工程 Jetson `~/gimbal`**（§16）。
-> 接线信息仍以项目根目录 `README.md` 为准，本文档不重复接线表，只引用。
+> 并同时收录 **CAN 通信验证**（§15）、**上位机正式工程 Jetson `~/gimbal`**（§16）、
+> **IMU 与小陀螺**（§17）和 **USART2 控制链路协议**（§18）。
+> 接线信息仍以项目根目录 `README.md` 为准，本文档不重复接线表，只引用；
+> 各模块自己的用法速查在 `UserLib/*/README.md`（Chassis / Comm / IMU）。
 
 - 适用平台：STM32F407VGTx + TB6612 ×2 + 亚博智能 L 型 520 编码器减速电机 ×4（麦克纳姆轮底盘）
 - 电机参数：减速比 1:40，磁环 11 线，12V 供电，减速后空载约 300 RPM（±5%）
 - 控制方式：四轮速度闭环（速度前馈 + 参考加速度前馈 + PI）+ 里程计，裸机 1 kHz 周期调度
 - 整定状态：2026-10-18 完成四轮速度环实机整定（架空、满占空比），参数与实测指标见 §7 / §11
+- IMU 链路：2026-10-19 打通并定型（硬件 I2C 400 kHz、SA0 焊死 GND=0x6A、20 分钟 soak 零错误），见 §17
 - 上位机：Jetson Nano `~/gimbal`（C++17），控制云台 ZDT X42S ×2（UART），预留底盘链路（CAN / UART）
 
 ---
@@ -336,9 +339,10 @@ TIM_ENCODERMODE_TI12（4 倍频，CPR=1760 不变）。PWM 频率：TIM5≈11.7k
 ## 9. 集成方式
 
 - `CMakeLists.txt`：库源文件已加入 `target_sources`，头文件路径已加入 `target_include_directories`（新增用户文件时照此追加，`chassis_tune.c` 已加）；
-- `main.c`：USER CODE 区内两处——
+- `main.c`：USER CODE 区内两三处——
   ```c
-  chassis_init();
+  chassis_init();                     /* 底盘 + IMU（imu_init 在里面，约 1.8s） */
+  uart_link_init();                   /* USART2 上位机链路（依赖 NVIC 勾选 USART2 中断） */
   #if CHASSIS_TUNE_ENABLE
       chassis_tune_init();            /* 整定模式 */
   #elif CHASSIS_DEMO_ENABLE
@@ -346,18 +350,23 @@ TIM_ENCODERMODE_TI12（4 倍频，CPR=1760 不变）。PWM 频率：TIM5≈11.7k
   #endif
   ...
   while (1) {
-      chassis_poll();                 /* 1 kHz 控制循环 */
+      chassis_poll();                 /* 1 kHz 控制循环（内部调 imu_poll） */
+      uart_link_poll();               /* 收命令帧 + 看门狗 + 100Hz 反馈帧 */
   #if CHASSIS_TUNE_ENABLE
       chassis_tune_poll();
   #else
-      chassis_debug_poll();
+      chassis_debug_poll();           /* 非阻塞：HAL_UART_Transmit_IT */
       #if CHASSIS_DEMO_ENABLE
           chassis_demo_poll();
       #endif
   #endif
   }
   ```
-- 调度源为 `HAL_GetTick()`（SysTick 1 kHz），**不占用任何中断**，CubeMX 重新生成代码时不会破坏集成（所有改动都在 USER CODE 区内）。
+- **控制环调度**用 `HAL_GetTick()`（SysTick 1 kHz），不占中断；
+  但**通信**占两个中断：`USART2_IRQHandler`（上位机链路逐字节收帧）与 `USART1_IRQHandler`
+  （调试帧非阻塞发送）。CubeMX 里 **USART2 global interrupt 必须勾选**，否则收不到命令（见 §18.8）；
+  USART1 的 NVIC 是在 `usart.c` 的 USER CODE 区手工打开的（CubeMX 没勾，重新生成时要保留）。
+- 全部集成点都在 USER CODE 区内，CubeMX 重新生成代码不会破坏。
 
 > 当前仓库状态下 `can_test_init()` / `can_test_poll()` 是**注释掉的**：`can_test` 的自诊断会往 USART1
 > 打日志（1 s 一行），与底盘的调试帧抢同一个串口。要用 CAN 时把这两行取消注释即可（见 §15）。
@@ -485,10 +494,13 @@ TB6612 + 减速电机的启动死区实测（2026-10-18，架空）：
 
 ## 13. 已知限制与后续计划
 
-- 里程计仅由轮速积分，打滑会累积漂移；后续可接 I2C 陀螺仪（本工程 I2C1 已就绪）做 IMU 融合；
+- **角度仍是"各算各的"**：里程计 yaw 来自轮速积分（打滑会累积），陀螺 yaw 来自 gz 积分（会漂移），
+  两者没有融合。陀螺外环只用 wz（速率），不用角度。要长时角度保持（云台跟随），
+  需要加"不打滑时用里程计校正陀螺 yaw"的互补滤波——取舍分析见 §17.6；
+- **自旋速率受抓地限制**：实测地砖上约 2.0~2.5 rad/s，`CHASSIS_SPIN_RATE_RAD_S` 已按此设为 2.0（§17.6）；
 - 未做电流环（TB6612 无电流采样），堵转保护靠限幅 + 后续可加堵转检测；
-- 未做 UART 遥控指令接口，后续可仿 RM 加 `vx vy wz` 串口解析；
-- 电机制动未用短路刹车（停止为滑行），如需刹车可扩展 `motor_brake()`。
+- 电机制动未用短路刹车（停止为滑行），如需刹车可扩展 `motor_brake()`；
+- **落地闭环指标未测**：小陀螺的稳态误差/纹波/超调还缺一次干净的落地实测（首轮被线拽/车卡住，见 §17.6）。
 - **满速上限 250 RPM**（≈1.05 m/s）：实测占空比 1000‰ 只有 260~296 RPM，`CHASSIS_MAX_VX` 给 1.0 已贴近上限；
 - **四轮参数不能通用**：Kff 3.50~3.95、机械阻力差异明显（BR 滑行衰减最慢），逐轮差异是物理事实；
 - **正反向不对称**：反向死区（≈50‰）明显小于正向（≈80~100‰），反向低速时积分补得多一些，属正常；
@@ -1095,7 +1107,8 @@ cd ~/gimbal_ctl && cmake -S . -B build && cmake --build build -j4
 | 位置 | 底盘扩展板 IIC 座（H5），模块平放：丝印 **X 指车头、Y 指车体左侧、Z 向上** |
 | 总线 | 3V3 供电（扩展板自带 R1/R3 两个 4.7K 上拉，与模块并联约 2.35K） |
 | 接线 | 出厂时扩展板 H5 的 SDA / SCL 与模块引脚是**交叉**的（见 §17.7 坑 6），2026-10-18 已飞线改正 → 现在用**硬件 I2C1**（SCL=PB6 / SDA=PB7，400 kHz，`IMU_USE_SOFT_I2C=0`）。软件 I2C 后端保留着（`IMU_USE_SOFT_I2C=1`，SCL=PB7/SDA=PB6），换板子遇到同样的交叉可以直接切 |
-| INT / SA0 | INT 不用（纯轮询，不接中断）；SA0 由扩展板决定地址 → 代码对 0x6A / 0x6B 两个地址都做探测 |
+| INT | **不用**（纯轮询，不接中断；芯片 INT 是推挽输出，空载无害）。线头剪短/包起来别蹭到别的网络 |
+| SA0 | 2026-10-19 已**直连 GND** → 地址固定 **0x6A**。之前是弱上拉（板载 100k），会飘 → 见 §17.7 坑 11。注意**不能用 100k 下拉**：会和板载 100k 上拉分压成 1.65V，等于没接 |
 | I2C 速率 | 建议 **400 kHz Fast Mode**（CubeMX：I2C1 → Speed Mode = Fast Mode）。仍为 100 kHz 时代码自动把陀螺采样周期从 2 ms 放宽到 3 ms |
 
 轴映射写在 `UserLib/IMU/imu_config.h` 的 `IMU_MAP_X/Y/Z`（编码 = 符号 × (芯片轴号+1)，当前恒等映射）。
@@ -1121,6 +1134,29 @@ imu_poll()（跟着 1kHz 控制环调用，内部按 2ms 节拍限速）
 - 陀螺量程 ±1000 dps：分辨率 0.03 dps ≈ 5.3e-4 rad/s，而自旋上限 4.76 rad/s = 273 dps，留 3.6 倍余量；
 - 阻塞代价：一次读 213 µs、每 2 ms 一次 ≈ **10.6% CPU**（软件 I2C 那套是 351 µs ≈ 17%）。
   想上 1 kHz 采样或者降到零阻塞，得改成 I2C + DMA，本库暂不做。
+
+**掉线与恢复**（2026-10-18 实测踩到过一次运行中掉线，复位后恢复）：
+
+| 机制 | 参数 | 行为 |
+|---|---|---|
+| 总线恢复 | `IMU_ERR_RECOVER_COUNT=5`、限流 `IMU_RECOVER_MIN_MS=100` | 连续 5 次读失败 → 硬件模式 `DeInit` **+ GPIO 打 9 个时钟 + STOP + Init**；软件模式打 9 个时钟 |
+| 判掉线 | `IMU_ERR_STALE_COUNT=10`（20 ms） | `imu_state()->healthy=false`，陀螺外环**自动退回纯运动学**，不再拿陈旧值去修正 |
+| 地址热切换 | — | 读/写失败时自动换另一个地址（0x6A ↔ 0x6B）再试一次，成功就锁定新地址并计入 `addr_switches`（SA0 不稳时靠它兜住） |
+| 自动恢复 | — | 只要重新读通，`healthy` 立刻回 true，外环无缝接回 |
+| 诊断字段 | 串口 `eps= ad= sw= rec=` | 每秒新增错误数 / 当前地址 / 换地址次数 / 总线解锁次数，一行判断总线状态 |
+
+缺了 9 个时钟那一步只 DeInit/Init 是解不开的：从机把 SDA 拉死时，必须给它时钟把状态机顶出来。
+
+**20 分钟空闲 soak 对比**（`test_data/spin_runs/idle_20min.log` / `soak_after_reflow_20min.log`）：
+
+| 版本 | 20 分钟错误数 | 形态 | 结果 |
+|---|---|---|---|
+| 重飞线前 | **144 次** | 集中在 t≈1100 s 的一次 0.7 s 爆发（`us` 213→27→213、`hz` 499→262→499） | 自动恢复，没进 STALE |
+| 重飞线后 | 0 次 | `us` 恒为 213、`hz` 恒 499、`e` 全程 0 | 一次都没掉（后来又复发了，见下） |
+| **SA0 焊死 GND 后** | **0 次** | `ad` 恒为 `6A`、`sw=0`、`rec=0`、`eps` 恒 0、`us` 恒 214 | 4801 帧全绿，彻底解决 |
+
+结论：那次卡死是**飞线电气质量**问题（长线 + 400 kHz 边沿余量），重做线之后 20 分钟零错误；
+软件的 9 时钟解锁 + `healthy` 回退仍然保留作兜底。
 
 ### 17.3 陀螺外环控制律（`UserLib/Chassis/chassis_gyro.c`）
 
@@ -1209,8 +1245,31 @@ chassis_gyro_set_yaw_target(gimbal_world_yaw);
 | 零偏（原始） | gz **+0.32 dps**、gx −0.62 dps、gy +0.11 dps | 逐块（4s/块）重复性 **0.003 dps = 0.05 mrad/s**，很稳 |
 | **上电瞬态** | 上电后约 5 s 内 x/y 轴噪声明显变大（gx 峰峰 11 dps、acc_z std 33 mm/s²），之后恢复 | 所以零偏标定延后到 **1.2 s**（`IMU_STARTUP_SETTLE_MS`） |
 
+#### 漂移实测（静止 130 s，`test_data/spin_runs/drift_120s.log`）
+
+| 项 | 实测 |
+|---|---|
+| 陀螺积分 yaw | 130 s 内显示 `0°`，即 **< 1°**（串口按整度输出，分辨率有限） |
+| 期间 `gz` 均值 | ±0.0000 rad/s（±0.03°/s 量级以内） |
+| 按零偏块间重复性推算 | 约 **0.1~0.3 °/min**，10 分钟 1~3° |
+
 > 对比一下量级：四轮测速的量化噪声约 ±2 RPM ≈ **±0.21 rad/s**，是陀螺噪声（0.0005 rad/s）的 **400 倍**。
 > 也就是说陀螺给的是整个底盘库里最干净的速度反馈，外环用它是赚的。
+
+#### 地面自旋实测（2026-10-19，首轮）
+
+四轮落地、当时 `CHASSIS_SPIN_RATE_RAD_S=3.5`，四段（静置/+3.5/停/−3.5）数据在
+`test_data/spin_runs/spin_ground_3v5.log`。**这一轮被外部干扰污染（车被线拽住/卡住），不能当闭环指标用**，
+但两个现象是真实的：
+
+| 现象 | 数据 | 结论 |
+|---|---|---|
+| +3.5 rad/s 段：满占空比也只到 2.0~2.6 rad/s | 四轮被外环推到 −211 / +242 RPM，`duty=1000‰` 顶满，`gyro` 峰值 2.64 后掉到 1.7 | **3.5 rad/s（200°/s）超出这台车在该地面的抓地极限**；麦轮自旋要横向擦地，损耗很大 |
+| −3.5 rad/s 段：轮速精准到位但车体不转 | 四轮 = ±184 RPM（正好等于运动学解）、`duty=830‰` 未饱和、`gyro≈0.00` | 轮子在空转、车体没在地上 → 现场确认是**车被卡住**，数据作废 |
+
+调参结论：**自旋速率要按实际抓地能力定**。这台车在地砖上大约 2.0~2.5 rad/s（120~145°/s）是稳态上限；
+`CHASSIS_SPIN_RATE_RAD_S` 因此**从 3.5 下调到 2.0**（约 115°/s，四轮约 105RPM）。
+等有开阔场地 + 不绕线的条件，再用扫速（1.0/2.0/3.0/4.0 rad/s 各 2 s）实测实际上限。
 
 **还没做的（需要落地面）**：真实打滑率、自旋转速闭环稳态误差/纹波、yaw 长时间漂移。
 用 §6.8 实验 5 抓数据（`CHASSIS_TUNE_ENABLE=1` + `CHASSIS_TUNE_EXPERIMENT=5`），
@@ -1230,8 +1289,222 @@ chassis_gyro_set_yaw_target(gimbal_world_yaw);
 | 7 | 软件 I2C 用 `HAL_GPIO_WritePin` | 一次读 6 字节要 **1285 µs**（-O0 下 HAL 调用太慢） | 改用 `BSRR` 直写 + DWT 周期计数做延时 → **351 µs** |
 | 8 | 上电就标零偏 | 上电后 ~5 s 内陀螺 x/y 噪声偏大（gx 峰峰 11 dps、acc_z std 33 mm/s²），0.7 s 就标定会被这段瞬态污染 | 加 `IMU_STARTUP_SETTLE_MS=1200`，标定延后到 1.2 s；上电到能跑车约 1.8 s |
 | 9 | 飞线后 SWD 提速到 1 MHz 会掉 | 飞线后 SWD 1 MHz 写 flash 报 `Failed to write memory`，降到 500 kHz 就成功 | 飞线后检查 SWD 那 4 根线（尤其 GND）；烧录用 `adapter speed 500` |
+| 11 | **SA0 弱上拉 → 地址漂移** | 运行中大量 27µs 快速 NACK（地址字节被拒），错误计数暴涨，控制环掉拍；偶发一阵后自己恢复 → 复发 | 根因是 SA0 没被拉死。**直连 GND（0Ω 或 ≤1k）**，不要 100k（会与板载 100k 上拉分压成 1.65V）。焊死后 20 分钟 soak 零错误 |
+| 10 | IMU 运行中突然掉线 | 串口变成 `imu ok` 但 `us=27 hz=0 ac=0,0,0`（读在地址阶段就被 NACK），复位能恢复 → HAL I2C 状态机/总线卡死，不是模块坏 | 恢复流程必须**先 DeInit 再用 GPIO 打 9 个时钟**把从机顶出来；另外连续失败要判 `healthy=false` 让外环退回，不能继续用陈旧数据 |
 
-## 18. 版本记录
+### 17.8 IMU 运行期地址应答不稳 → 底盘电机「一卡一卡」（2026-10-19 现场）
+
+> 一次完整的故障报告，供 IMU 作者对照排查。**修复已烧录**，当前状态：
+> `e=0`、`us=214µs`、`hz=499`、IMU `CAL=1`、F407 反馈 **100 Hz**。
+
+#### 现象
+
+- 无线遥控 W/S/A/D 驱动时，四轮直流减速电机**一卡一卡**（走走停停、顿挫）。
+- Jetson 侧实测 F407 反馈帧率只有 **57 Hz**（正常 100 Hz），帧间隔 p50≈10 ms、p90≈51.7 ms、max≈67.7 ms。
+- UART1 调试口（DAPLink 的 CDC）读到：`e=1496722` 且持续增长（≈280~520 次/秒）、
+  `us=27`、`hz=499`、`imu ok`、`CAL=0`（零偏标定无效）。
+
+#### 证据
+
+| 观测 | 数值 | 结论 |
+|---|---|---|
+| 单次读耗时 `us=` | **27 µs** | 400 kHz 下地址字节 9 bit ≈ 22.5 µs —— **在地址阶段就被 NACK**，不是 3 ms 超时 |
+| 错误计数 `e=` | 149 万，持续 +280~520/s | 约一半以上的读失败（`IMU_ERR_RECOVER_COUNT=5` 频繁触发恢复） |
+| 采样节拍 `hz=` | 499 | 失败后仍按 2 ms 节拍重试，节拍本身正常 |
+| 反馈帧率 | 57 Hz（p90 51.7 ms） | 1 kHz 控制环掉拍 ≈40 % |
+| 修复后 | `e=0`、`us=214 µs`、`CAL=1`、反馈 **100 Hz** | 换地址重试后读成功率 100 % |
+
+#### 根因
+
+1. **地址应答不稳**：驱动启动时探测到的是 `0x6B`（SA0 被板子拉高），但运行期中约一半的
+   I2C 事务在**地址字节**就被 NACK（`us≈27µs`）。这说明从机地址应答不稳定 ——
+   嫌疑指向 **SA0 引脚悬空/接触不良导致地址在 0x6A/0x6B 之间漂移**
+   （`IMU_PROBE_BOTH_ADDR=1` 探测时两个地址都能应答，正好掩盖了这一点）。
+2. **阻塞式恢复雪上加霜**：`imu_note_result()` 连续失败 5 次 → `imu_bus_recover()` →
+   `hw_bus_unstick()` 用 `HAL_Delay(1)` 连打 20 多下（DeInit + 9 个 SCL 脉冲 + STOP + 重 Init），
+   **每次约 25 ms，且限流 100 ms 一次**；另有部分失败走满 `IMU_I2C_TIMEOUT_MS=3`。
+   两者叠加，1 kHz 控制环每 100 ms 掉拍 30~40 % → 电机顿挫、反馈掉频。
+3. 调试串口 `HAL_UART_Transmit` 每 250 ms 阻塞约 17 ms（200 字节），进一步加重掉拍。
+
+#### 已做的修复
+
+| 文件 | 改动 | 效果 |
+|---|---|---|
+| `UserLib/IMU/imu.c` | `plat_read/plat_write` 失败时**换 0x6A/0x6B 另一个地址重试一次**，成功则锁定新地址（`imu_alt_addr()`） | `e`：150 万 → **0** |
+| `UserLib/IMU/imu.c` | 新增 `dwt_delay_us()`；`hw_bus_unstick()` 的 `HAL_Delay(1)` 全换 10 µs 忙等 | 恢复耗时 25 ms → **0.24 ms**（兜底，即使再触发也不拖控制环） |
+| `UserLib/Chassis/chassis_debug.c/.h` | 调试发送改 `HAL_UART_Transmit_IT` + 缓冲 + 忙标志（发不完丢帧） | 每 250 ms 不再阻塞 17 ms |
+| `UserLib/Comm/uart_link.c` | `HAL_UART_TxCpltCallback` 里转发 `chassis_debug_on_tx_cplt()` 清忙标志 | |
+| `Core/Src/usart.c` | USART1_MspInit 补 `HAL_NVIC_EnableIRQ(USART1_IRQn)`（优先级 7） | `Transmit_IT` 能真正发出去 |
+| `Core/Src/stm32f4xx_it.c` | 补 `USART1_IRQHandler` + `extern huart1` | |
+
+#### 验证
+
+- `e=0`、`us=214 µs`（正常 6 字节读耗时）、`hz=499`、`CAL=1`（零偏标定恢复）；
+- UART1 调试行 `t=` 间隔精确 250 ms（之前偶发 +18 ms）；
+- Jetson 侧反馈：201 帧中 **200 帧 CRC 全对**、2 s 内 200 帧 ≈ **100 Hz**。
+
+#### 给 IMU 负责同学的建议
+
+1. **先查 SA0 硬件**：SDA/SCL 飞线已确认没问题，但 **SA0 没查**。上电量一下
+   H5 座/飞线上 SA0 的电平是否稳定在 VCC 或 GND；若悬空，硬件上焊死一个电平最干净
+   （代码里定死地址），否则任何「双地址自动切换」都只是软件兜底。
+2. **代码层面**：探测时记下两个地址中应答的那个；运行期检测 NACK 时自动切另一个
+   （本次的兜底做法，`imu_alt_addr()`）；建议在 `imu_state` 里加「当前地址 /
+   每秒新增错误数 / 恢复次数」，一眼看出总线状态。
+3. **阻塞式恢复改非阻塞**：`hw_bus_unstick()` 放在 1 kHz 控制环里，`HAL_Delay(1)` 打
+   20 多下 = 25 ms 级阻塞，务必改 µs 级忙等（DWT）或下放到底优先级任务。
+4. **读超时**：`IMU_I2C_TIMEOUT_MS=3` 对 400 kHz 6 字节（~200 µs）足够；
+   但若总线接触不良会出现整段 3 ms 阻塞，可考虑失败后冷却一拍再重试。
+5. **调试输出**：`e=` 累计计数很好用；建议再补「每秒新增错误数」与「最近一次错误类型
+   （AF/BERR/ARLO）」，定位 NACK 还是总线错误会快很多。
+
+#### 复现与验证方法
+
+- 连接：DAPLink 的 `SWD`（烧录）+ `UART1`（调试口，CDC 出现在主机 `/dev/ttyACM0`）。
+- 读调试：`stty -F /dev/ttyACM0 115200 raw -echo` 后 `cat`，看 `e=` 是否增长、
+  `us=` 是否为 27 µs（异常）或 ~214 µs（正常）。
+- 反馈帧率：Jetson `/dev/ttyUSB0` 抓 2 秒原始字节，按 `5A A5 81`+40B+CRC+`0D` 切帧计数。
+- 注意：USART1 的 NVIC 已写入 `.ioc`（`NVIC.USART1_IRQn=true:7:0`，等价于在 CubeMX
+  里勾选 USART1 global interrupt），CubeMX 重新生成代码时会自动生成 `USART1_IRQHandler`
+  与 MspInit 里的 NVIC 使能；`stm32f4xx_it.c` 里手工补的那段在重新生成后会被官方版本
+  替换（内容等价，不影响功能）。
+
+## 18. USART2 上位机控制链路（`UserLib/Comm/uart_link`）
+
+> 这是**实际跑车用的控制入口**。§15 的 CAN 方案当前暂停（适配器 Linux 支持问题），
+> §16 的 Jetson `~/gimbal` 是云台工程，两者都以这条 UART 链路为准。
+> 模块自身的完整文档在 [`../UserLib/Comm/README.md`](../UserLib/Comm/README.md)。
+
+### 18.1 拓扑与数据流
+
+```
+Jetson Nano / 笔记本（USB-TTL，115200-8-N-1）
+        │  PD5(TX) -> F407 RX     PD6(RX) <- F407 TX
+        ▼
+USART2 RX 中断（逐字节）→ 256 B 环形缓冲 → uart_link_poll() 切帧
+        │  CRC 校验 + 命令字分发
+        ├─ SPEED  → chassis_spin(0) + chassis_set_velocity(vx, vy, wz)
+        ├─ SPIN   → chassis_spin(wz)
+        ├─ ESTOP  → chassis_spin(0) + chassis_stop() + chassis_driver_enable(0)
+        └─ CLEAR  → chassis_reset_odometry() + chassis_gyro_reset()
+        │
+        └─ 反馈帧 40 B / 10 ms → USART1 之外的 USART2 发回 Jetson
+```
+
+### 18.2 命令帧（Jetson → F407，**12 B**，全部小端）
+
+| off | 0 | 1 | 2 | 3 | 4..5 | 6..7 | 8..9 | 10 | 11 |
+|---|---|---|---|---|---|---|---|---|---|
+| 字段 | `0xA5` | `0x5A` | `cmd` | `seq` | `vx` i16 | `vy` i16 | `wz` i16 | `flags` | `crc8` |
+| 单位 | — | — | 见下表 | 递增 | mm/s | mm/s | 0.01 rad/s | 位域 | — |
+
+- `vx/vy`：**+x 前进 / +y 左移**（与 §4 的底盘约定一致）
+- `wz`：0.01 rad/s，逆时针为正
+- `crc8`：CRC-8/ATM（poly 0x07，init 0x00，不反射），覆盖 **offset 0~10**
+- `flags`：bit0 `EN` = 允许驱动；`EN=0` 时命令帧只刷新看门狗，目标速度被清零
+
+| cmd | 名称 | 作用 |
+|---|---|---|
+| `0x01` | SPEED | `vx/vy/wz` 直接下发；执行前先 `chassis_spin(0)` 退出自旋（SPIN 会无视用户 wz） |
+| `0x02` | ESTOP | 退出自旋 → 清速度 → **拉低 STBY**（电机自由）；需要下一帧带 `EN` 的 SPEED/SPIN 才能恢复 |
+| `0x03` | SPIN | `wz` 字段当自旋速率 → `chassis_spin(wz)`（小陀螺） |
+| `0x04` | CLEAR | 里程计 (x,y,yaw) + 陀螺积分 yaw 一起归零 |
+
+### 18.3 反馈帧（F407 → Jetson，**40 B**，10 ms 一帧 = 100 Hz）
+
+| off | 字段 | 类型 | 单位 |
+|---|---|---|---|
+| 0..1 | 帧头 `0x5A 0xA5`（与命令帧方向相反，便于重同步） | u8×2 | — |
+| 2 | 类型码 `0x81` | u8 | — |
+| 3 | 最近一次合法命令的 `seq` 回显 | u8 | — |
+| 4..7 / 8..11 | 里程计 `x` / `y` | i32 | mm |
+| 12..13 | 里程计 `yaw` | i16 | 0.01° |
+| 14..15 / 16..17 | 正解速度 `vx` / `vy` | i16 | mm/s |
+| 18..19 | 正解角速度 `wz` | i16 | 0.01 rad/s |
+| 20..21 / 22..23 | 陀螺积分 `yaw` / 陀螺实测 `wz` | i16 | 0.01° / 0.01 rad/s |
+| 24..25 | `status`（见下表） | u16 | 位域 |
+| 26..27 | `cmd_cnt` 累计合法命令帧数（低 16 位，上位机算丢包） | u16 | — |
+| 28..29 | `fb_seq` 反馈帧自身序号（算接收率） | u16 | — |
+| 30..37 | 四轮实测转速 FL/FR/BL/BR | i16×4 | 0.01 RPM |
+| 38 | `crc8`（覆盖 offset 0~37） | u8 | — |
+| 39 | 帧尾 `0x0D` | u8 | — |
+
+`status` 位：
+
+| 位 | 名称 | 含义 |
+|---|---|---|
+| 0x0001 | IMU_ONLINE | IMU 在线且配置成功 |
+| 0x0002 | LINK_OK | 最近 100 ms 内收到过合法控制帧 |
+| 0x0004 | WATCHDOG | 控制帧超时，目标速度已清零 |
+| 0x0008 | ESTOP | 急停锁存中 |
+| 0x0010 | DRIVER_ON | TB6612 STBY 高（输出使能） |
+| 0x0020 | SPIN | 小陀螺模式 |
+| 0x0040 | GYRO_ON | 陀螺外环非 OFF |
+| 0x0080 | IMU_CAL | 陀螺零偏标定有效 |
+
+### 18.4 看门狗与安全约定
+
+| 层级 | 触发 | 动作 | 参数 |
+|---|---|---|---|
+| 控制层 | 100 ms 没有合法 SPEED/SPIN 帧 | 目标速度强制清零（经斜坡减速）+ 置 `WATCHDOG`；**不失能、不松 STBY** | `ULINK_CMD_TIMEOUT_MS=100` |
+| 提示层 | 500 ms 连一帧合法命令都没有 | 置 `LINK_LOST`（只作状态显示，停车已在上一层完成） | `ULINK_CMD_LOST_MS=500` |
+| 急停 | ESTOP 命令 | 退出自旋 + 清速度 + 拉低 STBY，锁存 | 需带 `EN` 的帧恢复 |
+
+**为什么不超时就失能**：底盘/云台一旦松轴，受自重和惯性甩动比继续停着更危险（同 §16.5.4 的云台结论）。
+
+### 18.5 接口与统计
+
+```c
+uart_link_init();      /* main() 里 chassis_init() 之后 */
+while (1) { chassis_poll(); uart_link_poll(); }
+const uart_link_state_t *s = uart_link_state();   /* 只读统计 */
+```
+
+| 统计字段 | 含义 | 什么时候该看 |
+|---|---|---|
+| `rx_frames` / `last_seq` | 累计合法命令帧 / 最近 seq | 上位机算丢包率 |
+| `rx_crc_err` | CRC 失败次数 | 持续增长 = 干扰/波特率/线长问题 |
+| `rx_sync_err` | 帧头对不上的字节数 | 增长 = 丢字节后重同步 |
+| `rx_hw_err` | ORE/FE/NE 硬件错误 | 增长 = 波特率或电气问题 |
+| `rx_overflow` | 环形缓冲溢出丢字节 | **只有主循环被卡住才会出现**，是"掉拍"的直接证据 |
+| `tx_frames` / `tx_drop` | 已排入发送 / 因上一帧没发完丢掉 | `tx_drop` 增长 = 串口发不动 |
+| `cmd_speed` / `cmd_unknown` | 速度帧 / 未知命令字计数 | 排查上位机发错命令 |
+| `wdg_trips` | 看门狗触发次数 | 链路抖动的量化指标 |
+
+### 18.6 与底盘库的对接（单位与约定）
+
+| 链路量 | 底盘量 | 换算 |
+|---|---|---|
+| `vx/vy` (i16) | `chassis_set_velocity(vx, vy, wz)` (m/s) | ×0.001 |
+| `wz` (i16) | wz (rad/s) / `chassis_spin(rad_s)` | ×0.01 |
+| 反馈 `x/y` (i32 mm) | `chassis_state()->x / y` (m) | ×1000 |
+| 反馈 `yaw/wz` | 里程计 / 陀螺 | 0.01° / 0.01 rad/s |
+
+> ⚠️ **坐标约定必须统一**：本链路与底盘库 §4 一致（+x 前进 / +y 左移）。
+> §16.10 里 Jetson 侧 `ChassisCommand` 那套是「vx 右为正 / vy 前为正」，两者是**交换 + 一项反向**的关系，
+> 上位机发帧前要转过来，否则「前进」会变成「右移」。
+
+### 18.7 PC 端验证
+
+| 工具 | 用途 |
+|---|---|
+| `tools/uart_link_test.py` | 生成测试向量 / 独立 Python 实现交叉校验（不依赖 C 代码） |
+| `tools/codec_test.c` | 在 PC 上用 gcc 编译 `uart_link_codec.h`，做编解码双向自检 |
+
+实测（2026-10-19）：100 Hz 反馈稳定，`cmd_cnt`/`fb_seq` 连续，200/201 帧 CRC 全对；
+IMU 地址应答问题修好后，此前"反馈掉到 57 Hz"的现象消失。
+
+### 18.8 踩坑
+
+| # | 坑 | 现象 | 教训 |
+|---|---|---|---|
+| 1 | CubeMX 没勾 USART2 全局中断 | 一个字节都收不到，`rx_bytes` 恒 0 | `stm32f4xx_it.c` 里必须有 `USART2_IRQHandler`；`.ioc` 的 `NVIC.USART2_IRQn` 要打勾，否则重新生成会丢 |
+| 2 | 主循环里有长阻塞 | `rx_overflow` 增长、丢帧 | 256 B 环形缓冲在 100 Hz×12 B = 1.2 KB/s 下只够**约 200 ms**，控制环/串口任何一处卡住都会溢出 |
+| 3 | 改了字段没同步两端 | 上位机读数乱跳 | CRC 覆盖范围（命令 0~10 / 反馈 0~37）、偏移、单位必须与 `uart_link_codec.h` 和 PC 侧逐字节对齐 |
+| 4 | 帧头方向 | 反向帧头容易被误认 | 命令 `0xA5 0x5A`、反馈 `0x5A 0xA5` 故意相反，切帧时先判方向再校验 |
+| 5 | 自旋模式忽略用户 wz | 发了 SPEED 车不按指令平移 | `uart_link` 里 SPEED 执行前先 `chassis_spin(0)`，否则一直停在自旋 |
+
+## 19. 版本记录
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
@@ -1249,3 +1522,7 @@ chassis_gyro_set_yaw_target(gimbal_world_yaw);
 | 0.12 | 2026-10-18 | **四轮速度环实机整定**：①修复 FR/BR 编码器方向（ENC_DIR = +1/−1/+1/−1）；②编码器输入数字滤波（IC1F/IC2F=8，写在 `encoder.c` 里防 CubeGen 覆盖），FR 一路幽灵计数 146 次/8000 采样 → 0；③PID 重构：速度前馈 Kff 移入 `pid_calc`、新增参考加速度前馈 Kacc、条件积分抗饱和、测量微分一阶低通；④Kd 归零（噪声放大）、Ki 0.6→40（原来等于没积分）；⑤新增 §6.8 `chassis_tune` 整定模块（静态标定/斜升扫参/转向目检/惯性滑行自证 4 个实验，二进制 RAM 回传）；⑥新增 `tools/step_analysis.py`；⑦`CHASSIS_MAX_WHEEL_RPM` 280→250（实测满占空比仅 260~296RPM）、`I_MAX` 900→20；⑧`main.c` 恢复 `chassis_poll()`，演示/整定改为编译开关。实测：120 RPM 稳态误差 <1 RPM、斜坡超调 5~11%、25 RPM 低速仍稳；完整演示前进段 yaw 漂移 0.1° |
 | 0.13 | 2026-10-18 | **新增 §17 IMU 与陀螺偏航闭环（小陀螺）**：①`UserLib/IMU/`（ST 官方 `lsm6dsv16x_reg` 驱动 + `imu.c/h`：I2C1 400k、地址双探测、±1000dps/960Hz、上电静止零偏标定 + 静止慢速跟踪、40Hz 软件低通、yaw 积分、总线卡死自动恢复）；②`chassis_gyro.c/h`：陀螺外环 PI（斜坡/大误差双冻结、能力带、条件积分），三种模式 RATE/SPIN/YAW_TARGET；③`chassis.c` 接入外环并新增 `chassis_state()` 的 `imu_wz/imu_yaw/wz_eff/imu_online`；④JustFloat 13→17 通道、RawText 加 imu 字段；⑤`chassis_tune` 新增实验 5（陀螺自旋实测，8 通道二进制回传）；⑥演示新增小陀螺段；⑦`chassis_spin()` / `chassis_imu_online()` 接口。闭环逻辑已用 PC 对象仿真验证（打滑 18% 稳态误差 0.003 rad/s、无超调），**实机数据待补** |
 | 0.14 | 2026-10-18 | **文档补齐 + IMU 链路定型**：①新增 `UserLib/IMU/README.md`（定位/接口速查/配置表/上电时序/实测指标/六个坑）；②§17 整体重排：修正子标题编号（18.x → 17.x）、合并「软件 I2C 打通后」与「硬件 I2C」两张实机表、补 §17.6 噪声实测与上电瞬态、§17.7 坑表补到 9 条（飞线修复 SDA/SCL 交叉、软件 I2C 用 BSRR+DWT 提速、上电瞬态挡住标定、飞线后 SWD 降速）；③`IMU_STARTUP_SETTLE_MS=1200` 把零偏标定延后到启动瞬态之后；④I2C1 400 kHz 写进 `.ioc` + `i2c.c` |
+| 0.15 | 2026-10-18 | **IMU 掉线健壮性 + 文档定稿**：①修复实测发现的「运行中掉线」（HAL I2C 状态机/总线卡死）：恢复流程改为 DeInit → GPIO 打 9 个时钟 → STOP → 重 Init，并限流 100 ms；②新增 `healthy` 判据（连续 10 次读失败 = 掉线），陀螺外环自动退回纯运动学、读通自动接回；③串口加 `e=` 错误计数与 `STALE` 状态；④`docs/CHASSIS_LIBRARY.md` §17 补「掉线与恢复」「漂移实测（130s，<1°）」、坑表补到 10 条；⑤新增 `UserLib/IMU/README.md`（含 §10「为什么没加互补滤波/卡尔曼」的量化取舍） |
+| 0.16 | 2026-10-19 | **定位并修复「电机一卡一卡」**：IMU 运行期 I2C 地址应答不稳（约一半读在地址阶段被 NACK，`us≈27µs`）→ 频繁触发阻塞式总线恢复（25ms/100ms）+ 部分 3ms 超时 → 1kHz 控制环掉拍 30~40%、反馈 57Hz。修复：①`imu.c` 读失败换 0x6A/0x6B 地址重试并锁定（`e` 150万→0）；②`hw_bus_unstick` 的 `HAL_Delay(1)` 改 10µs DWT 忙等（25ms→0.24ms）；③`chassis_debug` 改非阻塞 `Transmit_IT` 并补 USART1 NVIC/IRQHandler；④`uart_link.c` TxCplt 转发。验证：反馈 100Hz（200/201 CRC 全对）、IMU `CAL=1`、`e=0`。详见 §17.8 |
+| 0.17 | 2026-10-19 | **SA0 焊死 + 总线诊断字段 + soak 复验**：①定位根因 = **SA0 弱上拉**（板载 100k 把地址吊在临界值，运行中在 0x6A/0x6B 间漂移 → 地址字节被 NACK，`us≈27µs`），**直连 GND** 后地址固定 6A；②`imu_state` 增 `err_per_s`/`addr_switches`/`recover_count`，串口加 `eps= ad= sw= rec=`（一行判断总线状态）；③地址热切换成功后同步 `i2c_addr` 并计数，开机探测的切换不计入；④20 分钟 soak：4801 帧全绿（`ad=6A`、`sw=0`、`rec=0`、`eps=0`、`us` 恒 214），对比焊死前同条件 144 次错误/一次 0.7s 爆发 |
+| 0.18 | 2026-10-19 | **新增 §18 USART2 上位机控制链路**：完整记录 `uart_link` 的 12 B 命令帧 / 40 B 反馈帧字段表、命令字（SPEED/ESTOP/SPIN/CLEAR）、`status` 位、看门狗三级约定（100 ms 清速度不失能 / 500 ms 置 LINK_LOST / ESTOP 才断 STBY）、统计字段含义、与底盘库的单位与坐标约定（⚠️ 与 §16.10 的 Jetson `ChassisCommand` 约定不同）、PC 端验证工具与 5 条踩坑；§19 顺延为版本记录 |

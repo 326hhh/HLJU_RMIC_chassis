@@ -24,6 +24,7 @@ typedef struct
 {
     /* ---- 健康状态 ---- */
     bool     online;            /* 1 = 探测到并配置成功 */
+    bool     healthy;           /* 1 = 最近在读得通；0 = 掉线（数据不可信，外环会自动退回） */
     uint8_t  whoami;            /* WHO_AM_I 读回值，正常 0x70 */
     uint16_t i2c_addr;          /* 实际使用的 HAL 8 位地址（0xD4 / 0xD6） */
     bool     bias_calibrated;   /* 1 = 零偏标定有效 */
@@ -32,6 +33,9 @@ typedef struct
     float    sample_hz;         /* 实测采样频率 */
     float    dt_s;              /* 最近一次采样间隔 (s) */
     float    read_us;           /* 最近一次陀螺读取耗时 (us)，看总线负载用 */
+    uint32_t err_per_s;         /* 最近 1 秒新增的错误数（一眼看总线状态） */
+    uint32_t addr_switches;     /* 运行中自动切换 0x6A/0x6B 的次数（SA0 不稳的指纹） */
+    uint32_t recover_count;     /* 触发总线解锁的次数 */
 
     /* ---- 角速度（车体系, rad/s） ---- */
     float gyro_rps[3];          /* 已去零偏，未滤波 */

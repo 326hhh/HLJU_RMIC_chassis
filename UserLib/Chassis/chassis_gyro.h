@@ -75,4 +75,12 @@ void chassis_gyro_set_yaw_target(float rad);
 /** 清积分 / 清角度误差 / 把陀螺积分 yaw 归零 */
 void chassis_gyro_reset(void);
 
+/**
+ * @brief 只清外环修正量（积分 + 修正输出），**不动 yaw**
+ *
+ * 停车 / 急停 / 看门狗触发时调用：防止上一次打滑/自旋积下来的修正量
+ * 在零指令下继续推着轮子转（架空时尤其明显）。
+ */
+void chassis_gyro_reset_correction(void);
+
 #endif /* USERLIB_CHASSIS_CHASSIS_GYRO_H */

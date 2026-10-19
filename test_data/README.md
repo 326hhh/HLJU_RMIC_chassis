@@ -1,6 +1,47 @@
-# test_data 目录说明
+# test_data —— 底盘实测数据归档
 
-底盘实测数据归档目录。命名规则：`日期_内容_版本.csv`。
+底盘、PID 与 IMU 的实测数据/日志，命名规则：`日期_内容_版本.csv`。
+数据只在本地归档，**不入库**（见 `.gitignore`），需要时重新采集即可。
+
+## 目录结构
+
+```
+test_data/
+├── README.md                          # 本文件：数据说明与结论
+├── vofa+1.csv                         # VOFA+ 导出（早期，列名以 RPM 通道标注）
+├── 20251003_pid_v05_6min.csv          # V0.5 固件 6.8 分钟 demo 录制（无前馈）
+├── 20251004_pid_v06_9min.csv          # v0.5→v0.6 两段数据（中途烧录）
+├── 20251004_pid_v06_swapBRFR.csv      # BR/FR 电机互换交叉验证
+├── 20251004_pid_v06_channelfixed.csv  # BR 通道重新接线后的验证
+├── 20251004_pid_v06_restored.csv      # BR/FR 接回原位后的验证
+├── 20251004_pid_v06_hotboard.csv      # 右板 TB6612 发烫时段录制
+├── tune_runs/                         # chassis_tune 整定实验原始串口抓取（.log）
+│   ├── step1.log / ramp1.log / sweep1.log / fine1.log   # 实验 2：闭环斜升扫参
+│   ├── kacc1.log / kacc2.log                            # 加速度前馈扫描
+│   ├── map1.log / dir1.log                              # 实验 1/3：开环标定与转向目检
+│   ├── coast1.log / coast2.log                          # 实验 4：惯性滑行
+│   ├── filt1.log                                        # 编码器滤波对比
+│   ├── handspin*.log                                    # 手转测编码器/CPR
+│   ├── final_demo.log / final_idle*.log / final_check.log / final2.log  # 最终验证
+│   └── step1.png                                        # step_analysis.py 出的图
+└── spin_runs/                         # IMU / 小陀螺相关原始抓取（.log）
+    ├── 20261018_spin_air.log / hand_ccw.log            # 实验 5：陀螺自旋实测
+    ├── drift_120s.log / idle_20min.log / idle_6min.log # 静止漂移/长时静置
+    ├── hw_i2c_check.log / hw_i2c_steady.log            # 硬件 I2C 体检
+    ├── imu_noise.log / imu_noise_settled.log           # 陀螺/加速度噪声块
+    ├── reflow_check.log / soak_after_reflow_20min.log  # 返修后复测
+    └── final_check.log                                 # 最终验证
+```
+
+## 文件格式
+
+- **顶层 CSV**：VOFA+ 导出（JustFloat，13 通道），可直接用表格软件/`step_analysis.py` 的分析思路看。
+- **`tune_runs/*.log`**：`chassis_tune` 实验 2 的串口原始抓取，头部是文本
+  `SET idx=.. kp=.. ki=.. rpm=..` / `STEP_BEGIN n=.. ch=12 dt_us=1000`，后面是
+  `n × 12` 通道小端 int16 采样块（每样本 24 字节）。用 `tools/step_analysis.py` 解析。
+- **`spin_runs/*.log`**：实验 5 的抓取，`STEP_BEGIN n=.. ch=8`，后面是
+  `n × 8` 通道小端 int16 块（每样本 16 字节）。用 `tools/spin_analysis.py` 解析；
+  `imu_noise*.log` 是 `NOISE_BLOCK n=.. ch=6` 的噪声块。
 
 ## 20251003_pid_v05_6min.csv
 
@@ -98,6 +139,9 @@
 1. 固件 `CHASSIS_DEBUG_ENABLE=1`、`CHASSIS_DEBUG_PROTOCOL=JustFloat`；
 2. VOFA+ 数据引擎选 JustFloat，勾选 13 通道曲线；
 3. 右键波形 → 导出 CSV（或 VOFA+ 日志目录直接拷贝），保存到本目录并命名。
+
+整定实验（实验 2 / 5）的数据是 `chassis_tune` 直接从 USART1 吐的二进制块，
+用 `tools/step_analysis.py` / `tools/spin_analysis.py` 解析，**不要**用 VOFA+ 导出。
 
 ## 2025-10-06 重新布线说明
 

@@ -40,6 +40,14 @@ void chassis_gyro_reset(void)
     imu_reset_yaw(0.0f);
 }
 
+void chassis_gyro_reset_correction(void)
+{
+    s_i_term = 0.0f;
+    s_g.wz_corr = 0.0f;
+    s_g.wz_out = 0.0f;
+    s_g.yaw_err = 0.0f;
+}
+
 void chassis_gyro_init(void)
 {
     s_g.mode = CHASSIS_GYRO_MODE_OFF;
@@ -84,7 +92,7 @@ float chassis_gyro_update(float wz_user, float dt, bool active,
     const imu_state_t *imu = imu_state();
     bool new_sample;
 
-    s_g.imu_online = imu_is_online();
+    s_g.imu_online = imu->healthy;      /* 掉线时外环退回纯运动学，不用陈旧数据 */
     s_g.wz_meas = imu->gyro_lpf[2];
     s_g.yaw_imu = imu->yaw_rad;
     new_sample = (imu->sample_count != s_last_sample_cnt);
@@ -169,6 +177,19 @@ float chassis_gyro_update(float wz_user, float dt, bool active,
         {
             out = -CHASSIS_GYRO_WZ_LIMIT;
             sat = true;
+        }
+
+        /* 零指令 + 车体没转：积分项缓慢回零（τ = 0.3 s）。
+         *
+         * 没有这一条时的坑（2026-10-18 实测）：架空时给过自旋指令（wheels 实验里
+         * wz=2.0），轮子转但车体不转，陀螺读到 0，误差 e 恒为 2.0 -> 积分充满；
+         * 指令归零后 i_term 没人清，输出 wz = KI*i_term ≈ 0.1 rad/s 一直挂着，
+         * 表现成「没给指令轮子却按自旋模式转」。地板上会自愈（车真的转，误差变负），
+         * 所以只在架空/打滑时暴露，很难想明白。 */
+        if ((fabsf(s_g.wz_ref) < 0.02f) &&
+            (fabsf(s_g.wz_meas) < CHASSIS_GYRO_STATIC_GYRO))
+        {
+            s_i_term *= (1.0f - (dt / 0.3f));
         }
 
         /* 条件积分：斜坡中 / 误差太大 / 顶限幅还想往前推 都不积分 */

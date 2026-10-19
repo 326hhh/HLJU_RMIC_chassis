@@ -10,7 +10,12 @@
 #ifndef USERLIB_CHASSIS_CHASSIS_DEBUG_H
 #define USERLIB_CHASSIS_CHASSIS_DEBUG_H
 
-/** 主循环中高频调用，内部按 250ms 节拍打印 */
+#include "main.h"   /* UART_HandleTypeDef */
+
+/** 主循环中高频调用，内部按 250ms 节拍打印（非阻塞发送） */
 void chassis_debug_poll(void);
+
+/** 在 HAL_UART_TxCpltCallback 里转发调用：清 USART1 调试发送忙标志 */
+void chassis_debug_on_tx_cplt(UART_HandleTypeDef *huart);
 
 #endif /* USERLIB_CHASSIS_CHASSIS_DEBUG_H */

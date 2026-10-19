@@ -32,9 +32,35 @@
 
 static uint32_t s_last_send;
 
+/* 非阻塞发送：缓冲 + 忙标志，发不完就丢这帧（调试输出可丢）。
+ * 原因：HAL_UART_Transmit 阻塞发送 ~200 字节约 17ms，会拖慢 1kHz 控制环。 */
+static uint8_t          s_dbg_tx_buf[256];
+static volatile uint8_t s_dbg_tx_busy;
+
 static void dbg_transmit(const uint8_t *data, uint16_t len)
 {
-    HAL_UART_Transmit(&huart1, (uint8_t *)data, len, 50u);
+    if (s_dbg_tx_busy != 0u)
+    {
+        return;
+    }
+    if (len > (uint16_t)sizeof(s_dbg_tx_buf))
+    {
+        len = (uint16_t)sizeof(s_dbg_tx_buf);
+    }
+    memcpy(s_dbg_tx_buf, data, len);
+    if (HAL_UART_Transmit_IT(&huart1, s_dbg_tx_buf, len) == HAL_OK)
+    {
+        s_dbg_tx_busy = 1u;
+    }
+}
+
+/** 在 HAL_UART_TxCpltCallback 里转发调用：USART1 发送完成 -> 清忙标志 */
+void chassis_debug_on_tx_cplt(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        s_dbg_tx_busy = 0u;
+    }
 }
 
 #if (CHASSIS_DEBUG_PROTOCOL == CHASSIS_DEBUG_PROTO_JUSTFLOAT)
@@ -85,7 +111,7 @@ static void dbg_fmt3(char *dst, size_t sz, float v)
 
 static void dbg_send_rawtext(const chassis_state_t *st)
 {
-    char line[240];
+    char line[300];
     char s_gz[16];
     char s_wz[16];
 
@@ -96,7 +122,8 @@ static void dbg_send_rawtext(const chassis_state_t *st)
      * rrrr = 实测轮速(RPM，四舍五入), dddd = 输出占空比(千分比) */
     (void)snprintf(line, sizeof(line),
                    "t=%lu | rpm FL %4d FR %4d BL %4d BR %4d | cnt %ld %ld %ld %ld | "
-                   "yaw=%ddeg | imu %s gz=%s iyaw=%ddeg wz=%s | ac=%d,%d,%d us=%d hz=%d\r\n",
+                   "yaw=%ddeg | imu %s gz=%s iyaw=%ddeg wz=%s | ac=%d,%d,%d us=%d hz=%d "
+                   "e=%lu eps=%lu ad=%02X sw=%lu rec=%lu\r\n",
                    (unsigned long)chassis_tick_ms(),
                    (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FL],
                    (int)st->wheel_rpm_meas[CHASSIS_WHEEL_FR],
@@ -107,7 +134,7 @@ static void dbg_send_rawtext(const chassis_state_t *st)
                    (long)st->wheel_count[CHASSIS_WHEEL_BL],
                    (long)st->wheel_count[CHASSIS_WHEEL_BR],
                    (int)(st->yaw * 180.0f / CHASSIS_PI),
-                   st->imu_online ? "ok" : "--",
+                   imu_state()->healthy ? "ok" : (imu_state()->online ? "STALE" : "--"),
                    s_gz,
                    (int)(st->imu_yaw * 180.0f / CHASSIS_PI),
                    s_wz,
@@ -115,7 +142,12 @@ static void dbg_send_rawtext(const chassis_state_t *st)
                    (int)(imu_state()->accel_mps2[1] * 100.0f),
                    (int)(imu_state()->accel_mps2[2] * 100.0f),
                    (int)imu_state()->read_us,
-                   (int)imu_state()->sample_hz);
+                   (int)imu_state()->sample_hz,
+                   (unsigned long)imu_state()->error_count,
+                   (unsigned long)imu_state()->err_per_s,
+                   (unsigned)(imu_state()->i2c_addr >> 1),
+                   (unsigned long)imu_state()->addr_switches,
+                   (unsigned long)imu_state()->recover_count);
     dbg_transmit((const uint8_t *)line, (uint16_t)strlen(line));
 }
 
@@ -142,6 +174,11 @@ void chassis_debug_poll(void)
 void chassis_debug_poll(void)
 {
     /* 编译期关闭 */
+}
+
+void chassis_debug_on_tx_cplt(UART_HandleTypeDef *huart)
+{
+    (void)huart;
 }
 
 #endif /* CHASSIS_DEBUG_ENABLE */

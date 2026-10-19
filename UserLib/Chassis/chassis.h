@@ -39,6 +39,8 @@ typedef struct
     float x, y;     /* m */
     float yaw;      /* rad，逆时针为正 */
 
+    uint8_t driver_on;  /* 1 = TB6612 STBY 高（输出使能），0 = 输出高阻自由 */
+
     /* ---- IMU / 陀螺外环 ---- */
     float imu_wz;       /* 陀螺实测 wz (rad/s，已去零偏、低通) */
     float imu_yaw;      /* 陀螺积分偏航角 (rad，-PI..PI) */
@@ -60,6 +62,9 @@ void chassis_set_velocity(float vx, float vy, float wz);
 
 /** 停止（目标速度清零，经斜坡减速） */
 void chassis_stop(void);
+
+/** 里程计清零：x/y/yaw 归零（不动电机、不清 PID；上位机「重新定原点」用） */
+void chassis_reset_odometry(void);
 
 /** 读取底盘状态（测量值/里程计，只读） */
 const chassis_state_t *chassis_state(void);

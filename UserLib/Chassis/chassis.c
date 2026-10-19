@@ -136,6 +136,7 @@ void chassis_init(void)
     }
 
     memset(&s_state, 0, sizeof(s_state));
+    s_state.driver_on = s_driver_on ? 1u : 0u;
     s_last_tick = HAL_GetTick();
 
     /* IMU（LSM6DSV16X）：探测 + 配置 + 上电静止零偏标定，约 0.7s。
@@ -179,6 +180,13 @@ void chassis_stop(void)
     chassis_set_velocity(0.0f, 0.0f, 0.0f);
 }
 
+void chassis_reset_odometry(void)
+{
+    s_state.x = 0.0f;
+    s_state.y = 0.0f;
+    s_state.yaw = 0.0f;
+}
+
 const chassis_state_t *chassis_state(void)
 {
     return &s_state;
@@ -190,6 +198,7 @@ void chassis_driver_enable(int on)
     HAL_GPIO_WritePin(L_STBY_GPIO_Port, L_STBY_Pin, lv);
     HAL_GPIO_WritePin(R_STBY_GPIO_Port, R_STBY_Pin, lv);
     s_driver_on = (on != 0);
+    s_state.driver_on = s_driver_on ? 1u : 0u;
 }
 
 void chassis_spin(float rad_s)
@@ -205,7 +214,7 @@ void chassis_spin(float rad_s)
 
 uint8_t chassis_imu_online(void)
 {
-    return imu_is_online() ? 1U : 0U;
+    return imu_state()->healthy ? 1U : 0U;
 }
 
 void chassis_set_mode(chassis_mode_t mode)
@@ -352,7 +361,7 @@ static void chassis_update(float dt)
         s_state.imu_wz = imu->gyro_lpf[2];
         s_state.imu_yaw = imu->yaw_rad;
         s_state.wz_eff = wz_eff;
-        s_state.imu_online = imu->online ? 1U : 0U;
+        s_state.imu_online = imu->healthy ? 1U : 0U;
     }
 
 #if CHASSIS_TUNE_ENABLE

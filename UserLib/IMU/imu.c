@@ -36,6 +36,9 @@ static uint32_t s_err_run;
 static float s_lpf_alpha;
 static float s_dt_f;                /* dt 的平滑值，给低通/统计用 */
 static bool  s_dwt_ok;              /* DWT 周期计数器是否可用（量 I2C 读耗时） */
+static uint32_t s_last_recover_ms;  /* 上次总线恢复的时刻（限流用） */
+static uint32_t s_err_window;       /* 本秒内累计的错误数 */
+static uint32_t s_rate_tick;        /* 上一秒的边界 */
 
 /* 轴映射表：车身 (x,y,z) 分别取自芯片的哪一根轴（编码见 imu_config.h） */
 static const int8_t s_map[3] = { IMU_MAP_X, IMU_MAP_Y, IMU_MAP_Z };
@@ -232,26 +235,61 @@ static int32_t plat_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len)
 
 #else  /* 硬件 I2C1 */
 
+/**
+ * @brief 备用地址：SA0 悬空/接触不良时地址会在 0x6A/0x6B 之间漂移，
+ *        默认地址读失败时换另一个地址再试一次，成功后锁定新地址。
+ *        （2026-10-19 现场：I2C 单次读 27us 快速失败、错误率过半，
+ *          物理接线检查无果，属典型的地址应答不稳）
+ */
+static uint16_t imu_alt_addr(void)
+{
+    return (s_addr_hal == (uint16_t)(IMU_ADDR_SA0_LOW << 1))
+               ? (uint16_t)(IMU_ADDR_SA0_HIGH << 1)
+               : (uint16_t)(IMU_ADDR_SA0_LOW << 1);
+}
+
 static int32_t plat_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len)
 {
     (void)handle;
     if (HAL_I2C_Mem_Write(&IMU_I2C_HANDLE, s_addr_hal, reg, I2C_MEMADD_SIZE_8BIT,
-                          (uint8_t *)bufp, len, IMU_I2C_TIMEOUT_MS) != HAL_OK)
+                          (uint8_t *)bufp, len, IMU_I2C_TIMEOUT_MS) == HAL_OK)
     {
-        return -1;
+        return 0;
     }
-    return 0;
+    {
+        const uint16_t alt = imu_alt_addr();
+        if (HAL_I2C_Mem_Write(&IMU_I2C_HANDLE, alt, reg, I2C_MEMADD_SIZE_8BIT,
+                              (uint8_t *)bufp, len, IMU_I2C_TIMEOUT_MS) == HAL_OK)
+        {
+            s_addr_hal = alt;
+            s_st.i2c_addr = alt;
+            s_st.addr_switches++;
+            return 0;
+        }
+    }
+    return -1;
 }
 
 static int32_t plat_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len)
 {
     (void)handle;
     if (HAL_I2C_Mem_Read(&IMU_I2C_HANDLE, s_addr_hal, reg, I2C_MEMADD_SIZE_8BIT,
-                         bufp, len, IMU_I2C_TIMEOUT_MS) != HAL_OK)
+                         bufp, len, IMU_I2C_TIMEOUT_MS) == HAL_OK)
     {
-        return -1;
+        return 0;
     }
-    return 0;
+    {
+        const uint16_t alt = imu_alt_addr();
+        if (HAL_I2C_Mem_Read(&IMU_I2C_HANDLE, alt, reg, I2C_MEMADD_SIZE_8BIT,
+                             bufp, len, IMU_I2C_TIMEOUT_MS) == HAL_OK)
+        {
+            s_addr_hal = alt;
+            s_st.i2c_addr = alt;
+            s_st.addr_switches++;
+            return 0;
+        }
+    }
+    return -1;
 }
 
 #endif /* IMU_USE_SOFT_I2C */
@@ -275,19 +313,86 @@ static uint32_t dwt_cyc(void)
     return s_dwt_ok ? DWT->CYCCNT : 0U;
 }
 
+/** 微秒级忙等；DWT 不可用时退化成 HAL_Delay(1) */
+static void dwt_delay_us(uint32_t us)
+{
+    if (!s_dwt_ok)
+    {
+        HAL_Delay(1u);
+        return;
+    }
+    {
+        const uint32_t start = DWT->CYCCNT;
+        const uint32_t cycles = us * (SystemCoreClock / 1000000U);
+        while ((DWT->CYCCNT - start) < cycles)
+        {
+        }
+    }
+}
+
 /**
  * @brief I2C 总线恢复
  * @note  硬件 I2C：外设 DeInit + Init 重来一遍；软件 I2C：打 9 个 SCL 脉冲
  *        只在连续多次读失败时调用，避免把偶发抖动放大成抖动源
  */
+/**
+ * @brief 硬件 I2C 模式下把总线救活：
+ *        ① 外设 DeInit，引脚交回 GPIO；
+ *        ② SDA 释放、SCL 手动打 9 个时钟 —— 把卡在某个字节中间的从机状态机顶出来
+ *           （从机若把 SDA 拉死，光 DeInit/Init 是解不开的，必须给时钟）；
+ *        ③ 补一个 STOP，再重新初始化外设。
+ */
+#if !IMU_USE_SOFT_I2C
+static void hw_bus_unstick(void)
+{
+    GPIO_InitTypeDef g = { 0 };
+
+    (void)HAL_I2C_DeInit(&IMU_I2C_HANDLE);
+
+    g.Pin = (uint16_t)(IMU_HW_PIN_SCL | IMU_HW_PIN_SDA);
+    g.Mode = GPIO_MODE_OUTPUT_OD;
+    g.Pull = GPIO_PULLUP;
+    g.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(IMU_HW_PORT, &g);
+    HAL_GPIO_WritePin(IMU_HW_PORT, (uint16_t)(IMU_HW_PIN_SCL | IMU_HW_PIN_SDA), GPIO_PIN_SET);
+    dwt_delay_us(10u);
+
+    for (int i = 0; i < 9; i++)
+    {
+        HAL_GPIO_WritePin(IMU_HW_PORT, IMU_HW_PIN_SCL, GPIO_PIN_RESET);
+        dwt_delay_us(10u);
+        HAL_GPIO_WritePin(IMU_HW_PORT, IMU_HW_PIN_SCL, GPIO_PIN_SET);
+        dwt_delay_us(10u);
+    }
+    HAL_GPIO_WritePin(IMU_HW_PORT, IMU_HW_PIN_SDA, GPIO_PIN_RESET);
+    dwt_delay_us(10u);
+    HAL_GPIO_WritePin(IMU_HW_PORT, IMU_HW_PIN_SCL, GPIO_PIN_SET);
+    dwt_delay_us(10u);
+    HAL_GPIO_WritePin(IMU_HW_PORT, IMU_HW_PIN_SDA, GPIO_PIN_SET);
+    dwt_delay_us(10u);
+
+    MX_I2C1_Init();                 /* MspInit 会把引脚切回 AF */
+}
+#endif
+
 void imu_bus_recover(void)
 {
+    uint32_t now = HAL_GetTick();
+
+    /* 恢复动作不便宜（DeInit/Init 期间控制环会掉几拍），限流一下 */
+    if ((now - s_last_recover_ms) < IMU_RECOVER_MIN_MS)
+    {
+        s_err_run = 0;
+        return;
+    }
+    s_last_recover_ms = now;
+
 #if IMU_USE_SOFT_I2C
     soft_bus_recover();
 #else
-    (void)HAL_I2C_DeInit(&IMU_I2C_HANDLE);
-    MX_I2C1_Init();
+    hw_bus_unstick();
 #endif
+    s_st.recover_count++;
     s_err_run = 0;
 }
 
@@ -297,11 +402,18 @@ static void imu_note_result(bool ok)
     if (ok)
     {
         s_err_run = 0;
+        s_st.healthy = true;
         return;
     }
 
     s_st.error_count++;
+    s_err_window++;
     s_err_run++;
+    if (s_err_run >= IMU_ERR_STALE_COUNT)
+    {
+        /* 连读都读不通了：数据不可信，外环应当退回纯运动学 */
+        s_st.healthy = false;
+    }
     if (s_err_run >= IMU_ERR_RECOVER_COUNT)
     {
         imu_bus_recover();
@@ -443,6 +555,8 @@ bool imu_init(void)
     HAL_Delay(IMU_STARTUP_SETTLE_MS);       /* 等启动瞬态过去再标零偏（见 imu_config.h） */
 
     s_st.online = true;
+    s_st.healthy = true;
+    s_st.addr_switches = 0U;        /* 探测阶段的切换不算「运行中漂移」 */
     imu_reset_yaw(0.0f);
     (void)imu_calibrate_bias(IMU_BIAS_CALIB_SAMPLES);
     return true;
@@ -559,7 +673,7 @@ void imu_poll(uint32_t now_ms)
 
     if (!s_st.online)
     {
-        return;
+        return;             /* 初始化就没连上，不折腾 */
     }
 
     if (s_last_tick_valid != 0U)
@@ -583,6 +697,14 @@ void imu_poll(uint32_t now_ms)
     }
     s_st.dt_s = dt;
     s_dt_f += 0.1f * (dt - s_dt_f);
+
+    /* 每 1 秒结算一次「新增错误数」，比累计值好用 */
+    if ((now_ms - s_rate_tick) >= 1000U)
+    {
+        s_st.err_per_s = s_err_window;
+        s_err_window = 0U;
+        s_rate_tick = now_ms;
+    }
 
     /* ---- 陀螺（顺便量一下这一读花了多少 us） ---- */
     {

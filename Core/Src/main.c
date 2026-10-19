@@ -32,6 +32,7 @@
 #include "chassis_debug.h"
 #include "chassis_tune.h"
 #include "can_test.h"
+#include "uart_link.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -108,6 +109,10 @@ int main(void)
   /* USER CODE BEGIN 2 */
   chassis_init();
 
+  /* 上位机链路：Jetson -> USART2(PD5/PD6) -> 底盘
+   * ⚠ 依赖 CubeMX 在 NVIC 里勾选 USART2 global interrupt，否则收不到数据 */
+  uart_link_init();
+
   /* 无 CAN 总线参与，CAN 自诊断会往 USART1 打日志污染调参数据，整定期间先不启动 */
   // can_test_init();
 
@@ -126,6 +131,8 @@ int main(void)
   {
     /* 1kHz 控制循环：chassis_poll() 内部检测 HAL tick，到点才执行一次 */
     chassis_poll();
+    /* 上位机链路：收命令帧 -> 底盘；看门狗；100 Hz 回传反馈帧 */
+    uart_link_poll();
 #if CHASSIS_TUNE_ENABLE
     chassis_tune_poll();
 #else
