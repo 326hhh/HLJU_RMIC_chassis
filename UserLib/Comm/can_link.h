@@ -73,5 +73,7 @@ void can_link_poll(void);
 
 /** 只读统计 */
 const can_link_state_t *can_link_state(void);
+/** 最近一次 0x021 收到的 flags（诊断用：bit0 = EN 允许驱动） */
+uint8_t can_link_flags(void);
 
 #endif /* USERLIB_COMM_CAN_LINK_H */

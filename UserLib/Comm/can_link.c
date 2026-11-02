@@ -263,6 +263,56 @@ static void can_link_send_feedback(uint32_t now)
     }
 }
 
+#if CANLINK_DIAG_FB_ENABLE
+/** 诊断帧：把固件内部状态每 10 ms 广播一次（正式版不编译）。
+ *  用途见 can_link_config.h 顶部说明。 */
+static void can_link_send_diag(void)
+{
+    const chassis_state_t *st = chassis_state();
+    uint8_t d[CANLINK_FB_SPLIT_BYTES];
+
+    /* 0x115：四轮占空比（千分比，i16 LE） */
+    for (uint8_t i = 0u; i < 4u; i++)
+    {
+        const int16_t v = (int16_t)st->wheel_duty[i];
+        d[2u * i]      = (uint8_t)(v & 0xFF);
+        d[2u * i + 1u] = (uint8_t)((v >> 8) & 0xFF);
+    }
+    (void)can_link_txq_push(CANLINK_ID_DIAG_DUTY, d, CANLINK_FB_SPLIT_BYTES);
+
+    /* 0x116：内部状态 */
+    const int16_t  vx  = (int16_t)(st->cmd_vx * 1000.0f);
+    const int16_t  wz  = (int16_t)(st->wz_eff * 1000.0f);
+    const uint16_t sc  = (uint16_t)chassis_stop_count();
+    d[0] = (uint8_t)(vx & 0xFF);
+    d[1] = (uint8_t)((vx >> 8) & 0xFF);
+    d[2] = (uint8_t)(wz & 0xFF);
+    d[3] = (uint8_t)((wz >> 8) & 0xFF);
+    d[4] = (uint8_t)(sc & 0xFF);
+    d[5] = (uint8_t)((sc >> 8) & 0xFF);
+    d[6] = (uint8_t)((st->driver_on ? 1u : 0u) | (st->imu_online ? 2u : 0u));
+    d[7] = can_link_flags();                /* bit0 = EN 位（0 时所有速度帧走停车分支） */
+    (void)can_link_txq_push(CANLINK_ID_DIAG_STATE, d, CANLINK_FB_SPLIT_BYTES);
+
+    /* 0x117：链路侧证据 —— UART 有没有在偷收帧、看门狗有没有触发、噪声计数 */
+    {
+        const uart_link_state_t *us = uart_link_state();
+        const can_link_state_t  *cs2 = can_link_state();
+        const uint32_t of  = us->rx_overflow > 255u ? 255u : us->rx_overflow;
+        const uint32_t sh  = cs2->rx_short   > 255u ? 255u : cs2->rx_short;
+        d[0] = (uint8_t)(us->rx_frames   & 0xFF);
+        d[1] = (uint8_t)((us->rx_frames  >> 8) & 0xFF);
+        d[2] = (uint8_t)(us->rx_crc_err  & 0xFF);
+        d[3] = (uint8_t)((us->rx_crc_err >> 8) & 0xFF);
+        d[4] = (uint8_t)(us->wdg_trips   & 0xFF);
+        d[5] = (uint8_t)((us->wdg_trips  >> 8) & 0xFF);
+        d[6] = (uint8_t)of;
+        d[7] = (uint8_t)sh;
+        (void)can_link_txq_push(CANLINK_ID_DIAG_STATE2, d, CANLINK_FB_SPLIT_BYTES);
+    }
+}
+#endif
+
 /* ============================ CAN 错误监测 ================================ */
 
 /** 读 CAN_ESR 的 TEC/REC，超阈值就把 CAN_ERR 位注入到反馈 status 里。
@@ -360,16 +410,28 @@ void can_link_poll(void)
     }
 
     can_link_handle_rx();       /* 1. 收：0x000 / 0x020 / 0x021 -> 底盘 */
-    ulink_tick_watchdog(now);   /* 2. 看门狗（与串口共用同一套超时状态） */
+    /* 2. 看门狗（与串口共用同一套超时状态）
+     * ⚠️ 必须传"最新" tick：handle_rx 里执行命令时会把 s_last_ctrl_ms 更新成更晚的
+     *    HAL_GetTick()；若沿用函数开头采样的 now，now - s_last_ctrl_ms 会 uint32 下溢成
+     *    约 42 亿 -> 误判超时 -> 每帧触发一次 chassis_stop()（车一顿一顿的元凶）。 */
+    ulink_tick_watchdog(HAL_GetTick());
     can_link_update_err_flag(); /* 3. CAN 错误计数 -> status 的 CAN_ERR 位 */
 
     if ((uint32_t)(now - s_last_fb_ms) >= CANLINK_FB_PERIOD_MS)
     {
         s_last_fb_ms = now;
         can_link_send_feedback(now);    /* 4. 100 Hz：组一组 40B 反馈推入队列 */
+#if CANLINK_DIAG_FB_ENABLE
+        can_link_send_diag();           /*    诊断帧（默认不编译） */
+#endif
     }
 
     can_link_pump_tx();         /* 5. 能发就发（越勤组内延迟越低） */
+}
+
+uint8_t can_link_flags(void)
+{
+    return (uint8_t)(s_flags & 0xFFu);
 }
 
 const can_link_state_t *can_link_state(void)

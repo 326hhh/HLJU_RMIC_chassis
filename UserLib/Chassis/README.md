@@ -128,7 +128,12 @@ UserLib/Chassis/
 - 头文件：轮序枚举 `FL/FR/BL/BR` 与轮数 4；`mecanum_inverse()` / `mecanum_forward()` 原型。
 - 实现：
   - 逆解：`omega_i = (vx + S·ky_i·vy + S·kw_i·wz·L)/r`，其中 `L = 半轴距 + 半轮距`、
-    `S = CHASSIS_ROLLER_SIGN`、`ky = {+1,-1,-1,+1}`、`kw = {-1,-1,+1,+1}`；
+    `S = CHASSIS_ROLLER_SIGN`、`ky = {-1,+1,+1,-1}`、`kw = {-1,+1,-1,+1}`；
+    ⚠️ `ky`/`kw` **必须同源**（都来自同一套辊筒方向 σ），两行的形状都是"左右交替"：
+    `+vy`（左移）与 `+wz`（逆时针）都是**左侧两轮往后、右侧两轮往前**。
+    单独翻其中一行去修方向会得到不自洽的假表——2026-11 连踩两次：`kw` 写成前后对转
+    （纯 wz 变「往前窜 + 画弧」）、`ky` 取 σ 负号（A/D 反向）。详见
+    `docs/CHASSIS_LIBRARY.md` §10.3.1 / §10.3.2。
   - 正解：四轮 rad/s → 车体 `vx/vy/wz`，与逆解互为逆运算（里程计用）。
 
 #### `motor.h` / `motor.c` —— TB6612 单路抽象

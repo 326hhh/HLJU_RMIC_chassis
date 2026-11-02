@@ -335,13 +335,15 @@ void ulink_set_extra_status(uint16_t bits)
 
 void ulink_tick_watchdog(uint32_t now)
 {
-    bool timed_out = (s_ctrl_seen != 0u) &&
-                     ((now - s_last_ctrl_ms) > ULINK_CMD_TIMEOUT_MS);
+    /* 有符号差值：now 比 s_last_ctrl_ms 早（或 uint32 回绕）时得到负数，不会误判超时 */
+    const int32_t age = (int32_t)(now - s_last_ctrl_ms);
+
+    bool timed_out = (s_ctrl_seen != 0u) && (age > (int32_t)ULINK_CMD_TIMEOUT_MS);
 
     /* LINK_OK 的语义是「链路没死」（500 ms 内收到过），比看门狗宽松：
      * 断几帧会置 WATCHDOG 但 LINK_OK 还亮，上位机据此区分「抖动」和「断了」 */
     s_stat.link_ok = ((s_ctrl_seen != 0u) &&
-                      ((now - s_last_ctrl_ms) < ULINK_CMD_LOST_MS)) ? 1u : 0u;
+                      (age < (int32_t)ULINK_CMD_LOST_MS)) ? 1u : 0u;
 
     if (timed_out)
     {
@@ -418,7 +420,9 @@ void uart_link_poll(void)
     uint32_t now = HAL_GetTick();
 
     ulink_parse_rx();        /* 收帧 + 执行命令（内部不阻塞） */
-    ulink_tick_watchdog(now); /* 控制帧超时保护 */
+    /* 控制帧超时保护：用最新 tick（parse_rx 内会把 s_last_ctrl_ms 更新成更晚的值，
+     * 沿用开头采样的 now 会 uint32 下溢成"超时"，见 can_link_poll 注释） */
+    ulink_tick_watchdog(HAL_GetTick());
 
     if ((now - s_last_fb_ms) >= ULINK_FB_PERIOD_MS)
     {

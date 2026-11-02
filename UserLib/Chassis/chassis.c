@@ -65,6 +65,7 @@ static float s_ref_prev[CHASSIS_WHEEL_NUM];     /* 上一周期目标轮速，�
 static float s_kacc[CHASSIS_WHEEL_NUM];         /* 参考加速度前馈系数 */
 static chassis_state_t s_state;
 static uint32_t s_last_tick;
+static uint32_t s_stop_cnt;         /* chassis_stop() 调用次数（诊断） */
 static bool s_inited;
 
 /* 调试/整定模式状态（正式跑车时恒为 CHASSIS_MODE_NORMAL） */
@@ -177,7 +178,13 @@ void chassis_set_velocity(float vx, float vy, float wz)
 
 void chassis_stop(void)
 {
+    s_stop_cnt++;
     chassis_set_velocity(0.0f, 0.0f, 0.0f);
+}
+
+uint32_t chassis_stop_count(void)
+{
+    return s_stop_cnt;
 }
 
 void chassis_reset_odometry(void)

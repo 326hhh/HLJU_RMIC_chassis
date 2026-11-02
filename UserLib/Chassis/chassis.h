@@ -63,6 +63,9 @@ void chassis_set_velocity(float vx, float vy, float wz);
 /** 停止（目标速度清零，经斜坡减速） */
 void chassis_stop(void);
 
+/** chassis_stop() 被调用的累计次数（诊断用：看门狗/EN=0/急停清速度的痕迹） */
+uint32_t chassis_stop_count(void);
+
 /** 里程计清零：x/y/yaw 归零（不动电机、不清 PID；上位机「重新定原点」用） */
 void chassis_reset_odometry(void);
 

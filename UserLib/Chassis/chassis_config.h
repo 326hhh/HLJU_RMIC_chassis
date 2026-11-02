@@ -120,7 +120,12 @@
  *   - 稳态始终差固定一小截（打滑补不回来）      -> 加 KI、或加大 I_MAX
  *   - 自旋起步冲过头 / 落地后抖                  -> 减 KP
  */
-/** 1 = 启用陀螺外环（IMU 没插也能编译，运行时自动退回纯运动学） */
+/** 1 = 启用陀螺外环（IMU 没插也能编译，运行时自动退回纯运动学）
+ *  0 = **编译期整段关断**：模式恒为 OFF，wz 直通运动学（纯前馈，不补打滑）。
+ *  由 `chassis_gyro.c` 的 init/set_mode 里的 `#if` 实现（2026-11 才真正接上，
+ *  在此之前本宏无人引用，改成 0 无效）。用途与判定流程见 docs/CHASSIS_LIBRARY.md §17.9。
+ *  ⚠️ 只改 CHASSIS_GYRO_MODE_DEFAULT 是没用的：uart_link 每帧调 chassis_spin(0)
+ *     会把模式强制切回 RATE。 */
 #define CHASSIS_GYRO_ENABLE          1
 /** 上电默认模式：0=OFF 1=RATE 2=SPIN 3=YAW_TARGET（见 chassis_gyro.h） */
 #define CHASSIS_GYRO_MODE_DEFAULT    1

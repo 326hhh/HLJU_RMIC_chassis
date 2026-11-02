@@ -59,14 +59,25 @@ void chassis_gyro_init(void)
 
     chassis_gyro_reset();
     s_g.imu_online = imu_init();
+#if CHASSIS_GYRO_ENABLE
     if (s_g.imu_online)
     {
         s_g.mode = (chassis_gyro_mode_t)CHASSIS_GYRO_MODE_DEFAULT;
     }
+#else
+    /* 编译期关断外环（CHASSIS_GYRO_ENABLE = 0）：一直 OFF，wz 直通运动学。
+     * 用途：A/B 排查「车体顿挫是外环在追打滑，还是纯机械擦地」。
+     * 注意：光在 config 里改 0 没有用——必须本文件也认这个开关（2026-11 补齐）。 */
+    s_g.mode = CHASSIS_GYRO_MODE_OFF;
+#endif
 }
 
 void chassis_gyro_set_mode(chassis_gyro_mode_t mode)
 {
+#if !CHASSIS_GYRO_ENABLE
+    /* 编译期关断：任何切模式（包括 uart_link 每帧调用的 chassis_spin(0)）都退回 OFF */
+    mode = CHASSIS_GYRO_MODE_OFF;
+#endif
     if (mode != s_g.mode)
     {
         s_i_term = 0.0f;

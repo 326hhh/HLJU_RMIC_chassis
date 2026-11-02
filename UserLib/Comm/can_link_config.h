@@ -59,4 +59,20 @@
 /** CAN 错误标志阈值：TEC/REC 超过它就置 ULINK_ST_CAN_ERR（96 = error-passive 预警线） */
 #define CANLINK_ERR_COUNT_THRESHOLD  96U
 
+/* ====================== 诊断帧（排查用，正式版默认关） ======================
+ * 1 = 每个反馈周期额外发两帧（0x115 / 0x116），把下位机内部状态暴露出来。
+ *    专门用来定位「轮速周期性掉速」这类只有固件内部才看得见的问题：
+ *      cmd_vx 掉了              -> 有人把速度指令清零了
+ *      cmd_vx 正常但 duty 掉了  -> 控制/输出链路被动过
+ *      stop_cnt 在涨            -> chassis_stop() 被调用（看门狗 / EN=0 / 急停）
+ * 帧格式（全部小端）：
+ *   0x115: [duty_FL, duty_FR, duty_BL, duty_BR]，各 i16，千分比
+ *   0x116: [cmd_vx(i16 mm/s), wz_eff(i16 mrad/s), stop_cnt(u16), 位: b0=driver b1=imu]
+ *   0x117: [uart_rx_frames(u16), uart_crc_err(u16), wdg_trips(u16), uart_overflow(u8), can_rx_short(u8)]
+ *          —— 用来判定：UART 链路是否在偷收帧 / 看门狗是否触发 / 噪声计数
+ * ⚠️ 打开后总线每秒多 200 帧，正式跑车请保持 0。 */
+#define CANLINK_DIAG_FB_ENABLE       0
+#define CANLINK_ID_DIAG_DUTY         0x115U
+#define CANLINK_ID_DIAG_STATE        0x116U
+#define CANLINK_ID_DIAG_STATE2       0x117U
 #endif /* USERLIB_COMM_CAN_LINK_CONFIG_H */
