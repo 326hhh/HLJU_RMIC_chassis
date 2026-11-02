@@ -99,4 +99,36 @@ void uart_link_poll(void);
 /** 只读统计（调试/上位机诊断用） */
 const uart_link_state_t *uart_link_state(void);
 
+/* ==================== 供其它传输层（CAN）复用的核心能力 ====================
+ * can_link.c 通过下面四个函数复用串口版的「命令落地 / 反馈组装 / 看门狗」，
+ * 两条链路语义完全一致，不重复实现编解码与状态机。
+ * 注意：这些函数共享 uart_link.c 内部状态（seq / 看门狗 / 急停锁存），
+ *       所以串口与 CAN 可以同时启用，谁先到谁生效（last writer wins）。
+ */
+
+/**
+ * @brief 施加一帧 12 字节命令帧（自带帧头 + CRC 校验）
+ * @param frame12 指向 ULINK_CMD_FRAME_LEN 字节
+ * @return true = 帧合法且已执行
+ */
+bool ulink_apply_cmd12(const uint8_t *frame12);
+
+/**
+ * @brief 只用当前底盘状态组出一帧 40 字节反馈（**不发送**）
+ * @param out 至少 ULINK_FB_FRAME_LEN 字节
+ * @param now HAL_GetTick()
+ * @return 帧长（40）；参数非法返回 0
+ */
+uint16_t ulink_build_fb_frame(uint8_t *out, uint32_t now);
+
+/**
+ * @brief 执行一次看门狗检查（两条链路共用同一套超时状态，重复调用无害）
+ */
+void ulink_tick_watchdog(uint32_t now);
+
+/**
+ * @brief 由其它传输层注入额外 status 位（如 CAN 的 CAN_ERR），与内部状态位按位或
+ */
+void ulink_set_extra_status(uint16_t bits);
+
 #endif /* USERLIB_COMM_UART_LINK_H */

@@ -67,6 +67,7 @@
 #define ULINK_ST_SPIN              0x0020u  /* 小陀螺模式 */
 #define ULINK_ST_GYRO_ON           0x0040u  /* 陀螺外环保留（非 OFF 模式） */
 #define ULINK_ST_IMU_CAL           0x0080u  /* 陀螺零偏标定有效 */
+#define ULINK_ST_CAN_ERR           0x0100u  /* CAN 总线错误：TEC/REC 超阈值（由 can_link 注入） */
 
 /* ============================== 时序参数 =================================== */
 /** 反馈帧周期 (ms)：100 Hz 下发，115200 下占约 2.8 ms/帧 */

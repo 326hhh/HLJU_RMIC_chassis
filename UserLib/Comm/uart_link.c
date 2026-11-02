@@ -56,6 +56,7 @@ static volatile uint8_t  s_ctrl_seen;   /* 是否收到过控制帧 */
 static uint8_t  s_wdg_latched;          /* 看门狗已触发（下降沿只动作一次） */
 static uint8_t  s_estop;                /* 急停锁存 */
 static uint32_t s_wdg_trips;            /* 看门狗触发累计（进 status 用不到，给调试） */
+static uint16_t s_extra_status;         /* 传输层注入的额外 status 位（CAN_ERR 等） */
 
 /* ============================== 小工具函数 ================================= */
 
@@ -112,8 +113,9 @@ static inline void ulink_rx_drop(uint16_t n)
     s_rx_tail = (uint16_t)((s_rx_tail + n) & (ULINK_RX_RING_SIZE - 1u));
 }
 
-/** 处理一帧已通过 CRC 的命令（帧内容见 uart_link.h 的表） */
-static void ulink_handle_frame(const uint8_t *f)
+/** 处理一帧已通过 CRC 的命令（帧内容见 uart_link.h 的表）
+ *  @return true = 帧合法且已执行（can_link 也复用本函数） */
+bool ulink_apply_cmd12(const uint8_t *f)
 {
     ulink_cmd_t c;
     bool        en;
@@ -121,7 +123,7 @@ static void ulink_handle_frame(const uint8_t *f)
 
     if (!ulink_parse_cmd(f, &c))
     {
-        return;
+        return false;
     }
     en = ((c.flags & ULINK_FLAG_EN) != 0u);
 
@@ -208,6 +210,7 @@ static void ulink_handle_frame(const uint8_t *f)
             s_stat.cmd_unknown++;
             break;
     }
+    return true;
 }
 
 /** 从环形缓冲里切帧：丢噪声字节、校验 CRC、合法就立刻执行 */
@@ -239,7 +242,7 @@ static void ulink_parse_rx(void)
         }
 
         ulink_rx_drop(ULINK_CMD_FRAME_LEN);
-        ulink_handle_frame(frame);
+        (void)ulink_apply_cmd12(frame);
     }
 }
 
@@ -265,11 +268,25 @@ static void ulink_send(uint8_t *frame, uint16_t len)
 /** 组装并发送一帧反馈（字段表见 uart_link.h） */
 static void ulink_send_feedback(uint32_t now)
 {
+    if (ulink_build_fb_frame(s_tx_frame, now) != 0u)
+    {
+        ulink_send(s_tx_frame, ULINK_FB_FRAME_LEN);
+    }
+}
+
+/** 只组帧不发送：can_link 复用本函数，保证两条链路的反馈字节完全一致 */
+uint16_t ulink_build_fb_frame(uint8_t *out, uint32_t now)
+{
     const chassis_state_t      *st  = chassis_state();
     const chassis_gyro_state_t *gy  = chassis_gyro_state();
     const imu_state_t          *imu = imu_state();
     ulink_fb_t fb;
     uint16_t   status = 0u;
+
+    if (out == NULL)
+    {
+        return 0u;
+    }
 
     /* ---- status 位 ---- */
     if (imu->online)          { status |= ULINK_ST_IMU_ONLINE; }
@@ -283,6 +300,8 @@ static void ulink_send_feedback(uint32_t now)
     if (st->driver_on)        { status |= ULINK_ST_DRIVER_ON; }
     if (gy->mode == CHASSIS_GYRO_MODE_SPIN) { status |= ULINK_ST_SPIN; }
     if (gy->mode != CHASSIS_GYRO_MODE_OFF)  { status |= ULINK_ST_GYRO_ON; }
+
+    status |= s_extra_status;   /* CAN_ERR 等由传输层注入的位 */
 
     /* ---- 内容（里程计 / 正解速度 / 陀螺 / 状态） ---- */
     fb.seq           = s_stat.last_seq;
@@ -303,13 +322,18 @@ static void ulink_send_feedback(uint32_t now)
         fb.wheel_rpm[i] = (int16_t)(st->wheel_rpm_meas[i] * 100.0f);
     }
 
-    (void)ulink_build_fb(s_tx_frame, &fb);
-    ulink_send(s_tx_frame, ULINK_FB_FRAME_LEN);
+    return ulink_build_fb(out, &fb);
+}
+
+/** 传输层注入额外 status 位（当前只有 CAN 用） */
+void ulink_set_extra_status(uint16_t bits)
+{
+    s_extra_status = bits;
 }
 
 /* ================================ 看门狗 =================================== */
 
-static void ulink_watchdog(uint32_t now)
+void ulink_tick_watchdog(uint32_t now)
 {
     bool timed_out = (s_ctrl_seen != 0u) &&
                      ((now - s_last_ctrl_ms) > ULINK_CMD_TIMEOUT_MS);
@@ -380,6 +404,7 @@ void uart_link_init(void)
     s_wdg_latched = 0u;
     s_estop = 0u;
     s_wdg_trips = 0u;
+    s_extra_status = 0u;
 
     s_last_ctrl_ms = HAL_GetTick();
     s_last_fb_ms = HAL_GetTick();
@@ -393,7 +418,7 @@ void uart_link_poll(void)
     uint32_t now = HAL_GetTick();
 
     ulink_parse_rx();        /* 收帧 + 执行命令（内部不阻塞） */
-    ulink_watchdog(now);     /* 控制帧超时保护 */
+    ulink_tick_watchdog(now); /* 控制帧超时保护 */
 
     if ((now - s_last_fb_ms) >= ULINK_FB_PERIOD_MS)
     {

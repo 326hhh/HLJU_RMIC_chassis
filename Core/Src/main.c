@@ -32,6 +32,7 @@
 #include "chassis_debug.h"
 #include "chassis_tune.h"
 #include "can_test.h"
+#include "can_link.h"
 #include "uart_link.h"
 /* USER CODE END Includes */
 
@@ -113,8 +114,16 @@ int main(void)
    * ⚠ 依赖 CubeMX 在 NVIC 里勾选 USART2 global interrupt，否则收不到数据 */
   uart_link_init();
 
-  /* 无 CAN 总线参与，CAN 自诊断会往 USART1 打日志污染调参数据，整定期间先不启动 */
-  // can_test_init();
+  /* CAN 链路：两个模块都要初始化 CAN1，编译期互斥（见 can_link.c 顶部 #error）
+   *   CAN_LINK_ENABLE = 1 -> 正式协议链路（联调期）
+   *   CANTEST_ENABLE  = 1 -> can_test 调试工具（排障期）
+   * 两个都关 = 整定期，CAN 完全不参与，不会污染 USART1 调参数据 */
+#if CAN_LINK_ENABLE
+  can_link_init();
+#endif
+#if CANTEST_ENABLE
+  can_test_init();
+#endif
 
 #if CHASSIS_TUNE_ENABLE
   /* 整定模式：由 chassis_tune 接管四轮并回传实验数据 */
@@ -144,7 +153,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* can_test_poll();   CAN：发心跳 + 收帧回显（整定期间关闭） */
+    /* CAN 链路（编译期开关见 can_link_config.h / can_test_config.h） */
+#if CAN_LINK_ENABLE
+    can_link_poll();    /* 收命令 + 看门狗 + 100 Hz 反馈 */
+#endif
+#if CANTEST_ENABLE
+    can_test_poll();    /* CAN 测试：心跳 + 点灯 + 回显 */
+#endif
   }
   /* USER CODE END 3 */
 }

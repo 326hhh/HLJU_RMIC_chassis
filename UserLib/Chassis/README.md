@@ -12,8 +12,9 @@
 - 输出：四个轮子的 TB6612 占空比，外加一份里程计（`x, y, yaw`）
 - 内部自己解决：麦轮逆解、轮速斜坡、速度环 PID、编码器测速、正解积分
 
-不带 RTOS、不依赖裁判系统，裸机 1 kHz。现在**没有任何指令入口**（遥控/CAN/串口解析都还没做），
-调用方负责调 `chassis_set_velocity()`。
+不带 RTOS、不依赖裁判系统，裸机 1 kHz。底盘库本身不内置指令入口，
+**通信入口由 `UserLib/Comm/` 提供**：串口 `uart_link` 与 CAN `can_link` 解析上位机帧后
+调用 `chassis_set_velocity()` / `chassis_spin()` / `chassis_stop()` 等接口。
 
 ## 2. 快速接入
 

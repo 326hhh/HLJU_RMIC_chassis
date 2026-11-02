@@ -368,8 +368,10 @@ TIM_ENCODERMODE_TI12（4 倍频，CPR=1760 不变）。PWM 频率：TIM5≈11.7k
   USART1 的 NVIC 是在 `usart.c` 的 USER CODE 区手工打开的（CubeMX 没勾，重新生成时要保留）。
 - 全部集成点都在 USER CODE 区内，CubeMX 重新生成代码不会破坏。
 
-> 当前仓库状态下 `can_test_init()` / `can_test_poll()` 是**注释掉的**：`can_test` 的自诊断会往 USART1
-> 打日志（1 s 一行），与底盘的调试帧抢同一个串口。要用 CAN 时把这两行取消注释即可（见 §15）。
+> 当前仓库状态下 CAN 相关调用全部由**编译开关**控制（不再注释代码）：
+> `can_link_config.h` 的 `CAN_LINK_ENABLE`（正式链路，联调期 1）与 `can_test_config.h` 的
+> `CANTEST_ENABLE`（链路验证，排障期 1）**编译期互斥**；两者都关 = 整定期，CAN 完全不参与，
+> 不会污染 USART1 调参数据。详见 §15 与 `UserLib/Comm/README.md`。
 
 ## 10. 上电校准（务必按顺序做）
 
@@ -669,14 +671,15 @@ CAN 1000000bps | tx=45 rx=44 err=0x00000000 bof=0 | TEC=45 REC=0 LEC=none
 > 注：CAN FD 在 Jetson 的内核 4.9 上用不了（`gs_usb` 是 2016 年的老版本，只支持经典 CAN）。
 > 本项目只需要 1 Mbps 经典帧，不受影响，选型时不必为 FD 多花钱。
 
-> **状态**：受适配器问题影响，CAN 通信方向已**整体暂停**；
-> 上位机工程的定位、对接点与恢复计划见 §16。
+> **状态**：CAN 适配器（CANable 2.0）已打通，Jetson 侧 `CanChassisLink` 与 F407 侧 `can_link`
+> 均已实现并联调自检通过（见 §16.9 / `docs/CAN_CONTROL_PROTOCOL.md`）。KLCC 系列适配器不可用，
+> 选型结论见 §15.8；KCAN 驱动规则（`99-kcan-usbpro.rules`）在换用 CANable 后不再需要。
 
 ## 16. 上位机正式工程：Jetson `~/gimbal`
 
 > 本节确立本项目的**上位机正式工程**——跑在 Jetson Nano 上的 `~/gimbal`，并说明它与本底盘库的对接关系。
-> 云台本体、通信、遥控全部由它负责；底盘只预留接口，见 §16.9。
-> **CAN 通信方向当前暂停**（适配器在 Linux 下不可用，见 §15.8），恢复计划见 §16.12。
+> 云台本体、通信、遥控全部由它负责；底盘链路已落地：UART（`UnifiedSerial`，与云台共用一个 CH340）
+> 与 CAN（`CanChassisLink`，SocketCAN）双后端可选，见 §16.9。
 
 ### 16.1 定位
 
@@ -688,7 +691,7 @@ CAN 1000000bps | tx=45 rx=44 err=0x00000000 bof=0 | TEC=45 REC=0 LEC=none
 | 形态 | 单进程守护式，无 RTOS、无 ROS 依赖 |
 | 控制对象 | 云台 ZDT X42S 闭环步进 ×2（**yaw = 2 / pitch = 1**），UART 115200 8N1 |
 | 控制入口 | UDP 40001（PC 鼠标客户端）+ stdin（本地调试） |
-| 底盘部分 | **仅预留接口**，协议未落地（§16.9 / §16.10） |
+| 底盘部分 | **已落地**：UART `UnifiedSerial`（与云台共用串口）或 CAN `CanChassisLink`（§16.9 / §16.10） |
 | 外部依赖 | **零第三方库** —— 仅 C++ 标准库 + Linux 系统调用（termios / SocketCAN / BSD socket） |
 
 **为什么不用 Python / ROS**：
@@ -983,52 +986,44 @@ cd ~/gimbal_ctl && cmake -S . -B build && cmake --build build -j4
 鼠标映射采用**角速度**（鼠标速度 → 云台角速度），`sens = 0.09 °/px`，`τ = 50 ms` 平滑。
 按下时 `XGrabPointer` 锁光标，`Esc` 退出。客户端按键：`空格` 停手 · `e` 使能 · `x` 急停 · `h` 回中 · `z` 归零 · `r` 清速率 · `v` 视频开关。
 
-### 16.9 与底盘库的对接点（已预留，尚未实现）
+### 16.9 与底盘库的对接点（已落地）
 
 | 文件 | 角色 | 状态 |
 |---|---|---|
-| `include/gimbal/link/chassis_link.hpp` | `IChassisLink` 抽象 + `UartChassisLink` / `CanChassisLink` 两个实现 | 接口与数据结构完整；两个实现的 `poll()` 均为 `TODO` 占位 |
-| `include/gimbal/transport/can_transport.hpp` | ZDT 电机改走 CAN 的传输层（29-bit 扩展帧、拆包重组） | 帧封装已按手册实现，注释明写**无硬件验证** |
+| `include/gimbal/link/chassis_link.hpp` | `IChassisLink` 抽象 + 帧常量 / `ChassisCommand` / `ChassisState` / 编解码纯函数 | ✅ 与 F407 `uart_link_config.h` 逐字节对齐，selftest [6] 用 Python 生成的向量锁死 |
+| `include/gimbal/link/unified_serial.hpp` | 单串口统一链路：底盘帧与 ZDT 帧共用一个 fd（`RxDemux` 帧分流），UART 版底盘收发 | ✅ 已实现（原 `UartChassisLink` 并入） |
+| `include/gimbal/link/can_chassis_link.hpp` | CAN 底盘链路（SocketCAN 标准帧）+ `CanFbGroup` 反馈组拼装 | ✅ 已实现并实测（`docs/CAN_CONTROL_PROTOCOL.md` §9.1，selftest [8]） |
+| `include/gimbal/transport/can_transport.hpp` | ZDT 电机改走 CAN 的传输层（29-bit 扩展帧、拆包重组） | 帧封装按手册实现；云台 ZDT 尚未切 CAN 模式，**待上机验证** |
 
-`CanChassisLink` 是**全项目唯一的底盘接入点**，设计意图是「换实现不改上层调用点」——
-将来底盘协议落地时，只需填 `poll()` / `setCommand()`，UDP 控制链路与云台逻辑都不用动。
+`IChassisLink` 仍是**全项目唯一的底盘接入点**：Jetson 主程序只认 `setCommand()` / `state()` / `poll()`，
+串口↔CAN 只换实现类，UDP 控制链路与云台逻辑不用动。帧映射与组完整性规则见 §16.10
+与 `docs/CAN_CONTROL_PROTOCOL.md` §3.2。
 
-⚠️ **当前占位实现故意不占用串口 / socket**：`UartChassisLink::open()` 只打印一行提示就返回 `true`，
-不去 `open("/dev/ttyTHS1")`，避免与云台的 CH340 抢资源，也避免和本库调试串口 USART1 冲突。
-
-### 16.10 预留底盘协议（与下位机对齐）
+### 16.10 正式底盘协议（已实现，与下位机逐字节对齐）
 
 | ID | 帧类型 | 方向 | 内容 |
 |---|---|---|---|
-| `0x020` | 11-bit 标准帧 | Jetson → F407 | 底盘速度 `vx(i16 mm/s) \| vy(i16 mm/s) \| wz(i16 0.01rad/s) \| flags \| seq` |
-| `0x000` | 11-bit 标准帧 | 广播 | 急停 |
-| `0x110` | 11-bit 标准帧 | F407 → Jetson | 里程计 / IMU 反馈 |
+| `0x000` | 11-bit 标准帧 | 广播（Jetson → F407 只收不发） | 急停（DLC 任意，含 0） |
+| `0x020` | 11-bit 标准帧 | Jetson → F407 | 底盘速度 `cmd \| seq \| vx(i16 mm/s) \| vy(i16 mm/s) \| wz(i16 0.01rad/s)`，100 Hz |
+| `0x021` | 11-bit 标准帧 | Jetson → F407 | flags（bit0 = EN），10 Hz 保活 + 变化即发 |
+| `0x110~0x114` | 11-bit 标准帧 | F407 → Jetson | 40 B 反馈按 8 字节切 5 帧，100 Hz |
 | `(Addr << 8) \| Packet` | **29-bit 扩展帧** | 双向 | 云台 ZDT 步进电机 |
 
 标准帧（11 位）与扩展帧（29 位）在 CAN 协议层天然隔离，**同一条总线上混跑不冲突** ——
 这正是「云台和底盘共用一根 CAN，靠 ID 类型区分」这个设计的依据。
+命令落地 / CRC / 看门狗在两条链路上复用 `uart_link` 同一份实现，串口与 CAN 行为完全一致
+（详见 `UserLib/Comm/README.md` 与 `docs/CAN_CONTROL_PROTOCOL.md`）。
 
-#### ⚠️ 待修正：坐标约定两侧不一致
+#### 坐标约定（已统一）
 
-| | `ChassisCommand`（上位机 `chassis_link.hpp`） | 本底盘库（§4） |
+| | `ChassisCommand`（Jetson） | 本底盘库（§4） |
 |---|---|---|
-| `vx` | **右为正** | **+x = 前进** |
-| `vy` | **前为正** | **+y = 左移** |
-| `wz` | 逆时针为正 | 逆时针为正 ✅ |
+| `vx` | **+x 前进** ✅ | **+x 前进** |
+| `vy` | **+y 左移** ✅ | **+y 左移** |
+| `wz` | 逆时针为正 ✅ | 逆时针为正 ✅ |
 
-**这两套约定是「交换 + 一项反向」的关系**，不是笔误级别的差异。
-落地 `CanChassisLink` 时必须先统一，否则「前进」会变成「右移」。
-建议**改上位机侧与本库 §4 对齐**（`+x 前进 / +y 左移`），因为本库的符号已完整贯穿运动学、里程计与 PID 三段，改下位机代价更大。
-
-### 16.11 待决事项：总线波特率
-
-| 方案 | F407 侧 | Jetson 侧 | 取舍 |
-|---|---|---|---|
-| **A（倾向）** | `CANTEST_PRESCALER = 6` → **500 kbps** | 不改 | ZDT 电机 CAN 默认 500 kbps，三者共总线时无需再改 |
-| B | 保持 `3` → **1 Mbps** | 改 `CanChassisLink::Config.bitrate` | 总线余量大、延迟低 |
-
-⚠️ **当前两侧不一致**：`chassis_link.hpp`（`bitrate = 500000`）与 `can_transport.hpp` 的默认值都是 500 kbps，
-而 F407 实测跑在 **1 Mbps**（`CANTEST_PRESCALER = 3`）。**落地前必须先统一，否则总线必然不通。**
+上位机侧 `chassis_link.hpp` 与 UDP 线协议 v2 的底盘字段都已按「`+x` 前进 / `+y` 左移」实现
+（2026-10-19 统一）；旧草案的「`vx` 右 / `vy` 前」已废弃。
 
 ### 16.12 当前状态与下一步
 
@@ -1050,24 +1045,28 @@ cd ~/gimbal_ctl && cmake -S . -B build && cmake --build build -j4
   | 显式 `Disable` | `st=0x06`，`Enabled` 位清除 ✓ |
   | 急停 | 速度 0 + 已失能 ✓ |
 
-#### 未验证 ❌（下一步的核心工作）
+#### 未验证 / 待办
 
-| # | 待办 | 依赖 |
-|---|---|---|
-| 1 | **真机 ZDT 串口通信**（`~/gimbal` 去掉 `--dry` 直连驱动板） | CH340 插上使 `/dev/ttyUSB0` 出现 |
-| 2 | **方向极性标定**（两轴 `invert_dir`，命令行开关尚未暴露） | 同上 |
-| 3 | **pitch 实际机械行程**实测（现 `-45~+45` 是估的） | 同上 |
-| 4 | **两电机地址确认**（`yaw=2 / pitch=1`，须在驱动板菜单设，代码改不了） | 同上 |
-| 5 | 双轴同步运动（ZDT 多机同步标志 + 广播触发，手册 §3.5.2） | 做绝对定位时 |
-| 6 | 位置模式（`mkPositionEmm()` 已实现）上机验证 | 同上 |
-| 7 | 统一总线波特率（§16.11） | CAN 硬件就绪 |
-| 8 | 实现 `CanChassisLink`（SocketCAN 收发 + `0x020`/`0x110` 编解码） | **不依赖硬件，可先写** |
-| 9 | F407 侧实现 `0x020` 解析 → 接入 `chassis_set_velocity()` | 需先核对 `chassis.h` 接口签名 |
+| # | 待办 | 依赖 | 状态 |
+|---|---|---|---|
+| 1 | **真机 ZDT 串口通信**（`~/gimbal` 直连驱动板） | CH340 插上使 `/dev/ttyUSB0` 出现 | 待做 |
+| 2 | **方向极性标定**（两轴 `invert_dir`） | 同上 | 待做 |
+| 3 | **pitch 实际机械行程**实测（现 `-45~+45` 是估的） | 同上 | 待做 |
+| 4 | **两电机地址确认**（`yaw=2 / pitch=1`，须在驱动板菜单设） | 同上 | 待做 |
+| 5 | 双轴同步运动（ZDT 多机同步标志 + 广播触发，手册 §3.5.2） | 做绝对定位时 | 待做 |
+| 6 | 位置模式（`mkPositionEmm()` 已实现）上机验证 | 同上 | 待做 |
+| 7 | 统一总线波特率（1 Mbps） | CAN 硬件 | ✅ 已统一（§16.11） |
+| 8 | 实现 `CanChassisLink`（SocketCAN + `0x020`/`0x110~0x114` 组规则） | 不依赖硬件 | ✅ 已实现并实测 |
+| 9 | F407 侧实现 `0x020` 解析 → `chassis_set_velocity()` | 需核对 `chassis.h` 签名 | ✅ 已完成（`can_link.c`） |
+| 10 | 云台 ZDT 切 CAN 模式 + 1 Mbps | 面板/上位机切换 | ⏳ 待做 |
+| 11 | `--device can0` 全 CAN 端到端联调（底盘 + 云台同总线） | ZDT 切模式后 | ⏳ 待做 |
 
-#### CAN 方向暂停说明
+#### CAN 双链路现状（恢复说明）
 
-上位机侧 CAN 适配器（KCANBus-U-I）在 Linux 下无法工作，选型结论见 §15.8。
-**在与厂商确认 / 换用 CANable 2.0 之前，CAN 方向整体暂停。**
+原计划「底盘 CAN + 云台 UART（CH340）」的混合方案已放弃：**2026-10-21 定案改为全部走 CAN**
+（云台 ZDT×2 与底盘 F407 共用 `can0`，1 Mbps，面板/上位机切 CAN 模式）。
+CH340 UART 通路转为备份，不再作为主通道；上位机用 `--device can0` 全 CAN 运行
+（或 `--chassis can0` 混合模式联调）。
 
 **不受影响、可独立推进的部分**：F407 的 silent-loopback 自检（§15.3 自检档）已验证协议链路完好；
 底盘的电机闭环、运动学、PID 等全部逻辑与 CAN 无关；云台的 UART 链路与 `--dry` 自测也不依赖 CAN。
@@ -1371,8 +1370,9 @@ chassis_gyro_set_yaw_target(gimbal_world_yaw);
 
 ## 18. USART2 上位机控制链路（`UserLib/Comm/uart_link`）
 
-> 这是**实际跑车用的控制入口**。§15 的 CAN 方案当前暂停（适配器 Linux 支持问题），
-> §16 的 Jetson `~/gimbal` 是云台工程，两者都以这条 UART 链路为准。
+> 这是**实际跑车用的控制入口之一**（串口版）。CAN 正式链路 `can_link` 与它协议逐字段一致
+> （见 `UserLib/Comm/README.md` 与 `docs/CAN_CONTROL_PROTOCOL.md`），两条链路可并存。
+> §16 的 Jetson `~/gimbal` 是云台工程，底盘链路 UART / CAN 双后端均已落地。
 > 模块自身的完整文档在 [`../UserLib/Comm/README.md`](../UserLib/Comm/README.md)。
 
 ### 18.1 拓扑与数据流
@@ -1480,9 +1480,9 @@ const uart_link_state_t *s = uart_link_state();   /* 只读统计 */
 | 反馈 `x/y` (i32 mm) | `chassis_state()->x / y` (m) | ×1000 |
 | 反馈 `yaw/wz` | 里程计 / 陀螺 | 0.01° / 0.01 rad/s |
 
-> ⚠️ **坐标约定必须统一**：本链路与底盘库 §4 一致（+x 前进 / +y 左移）。
-> §16.10 里 Jetson 侧 `ChassisCommand` 那套是「vx 右为正 / vy 前为正」，两者是**交换 + 一项反向**的关系，
-> 上位机发帧前要转过来，否则「前进」会变成「右移」。
+> ⚠️ **坐标约定已统一**：本链路与底盘库 §4 一致（+x 前进 / +y 左移）。
+> §16.10 里 Jetson 侧 `ChassisCommand` 与 UDP 线协议 v2 的底盘字段也已按同一约定实现
+> （2026-10-19 统一），上位机发帧前**不需要再做转换**。
 
 ### 18.7 PC 端验证
 
@@ -1526,3 +1526,4 @@ IMU 地址应答问题修好后，此前"反馈掉到 57 Hz"的现象消失。
 | 0.16 | 2026-10-19 | **定位并修复「电机一卡一卡」**：IMU 运行期 I2C 地址应答不稳（约一半读在地址阶段被 NACK，`us≈27µs`）→ 频繁触发阻塞式总线恢复（25ms/100ms）+ 部分 3ms 超时 → 1kHz 控制环掉拍 30~40%、反馈 57Hz。修复：①`imu.c` 读失败换 0x6A/0x6B 地址重试并锁定（`e` 150万→0）；②`hw_bus_unstick` 的 `HAL_Delay(1)` 改 10µs DWT 忙等（25ms→0.24ms）；③`chassis_debug` 改非阻塞 `Transmit_IT` 并补 USART1 NVIC/IRQHandler；④`uart_link.c` TxCplt 转发。验证：反馈 100Hz（200/201 CRC 全对）、IMU `CAL=1`、`e=0`。详见 §17.8 |
 | 0.17 | 2026-10-19 | **SA0 焊死 + 总线诊断字段 + soak 复验**：①定位根因 = **SA0 弱上拉**（板载 100k 把地址吊在临界值，运行中在 0x6A/0x6B 间漂移 → 地址字节被 NACK，`us≈27µs`），**直连 GND** 后地址固定 6A；②`imu_state` 增 `err_per_s`/`addr_switches`/`recover_count`，串口加 `eps= ad= sw= rec=`（一行判断总线状态）；③地址热切换成功后同步 `i2c_addr` 并计数，开机探测的切换不计入；④20 分钟 soak：4801 帧全绿（`ad=6A`、`sw=0`、`rec=0`、`eps=0`、`us` 恒 214），对比焊死前同条件 144 次错误/一次 0.7s 爆发 |
 | 0.18 | 2026-10-19 | **新增 §18 USART2 上位机控制链路**：完整记录 `uart_link` 的 12 B 命令帧 / 40 B 反馈帧字段表、命令字（SPEED/ESTOP/SPIN/CLEAR）、`status` 位、看门狗三级约定（100 ms 清速度不失能 / 500 ms 置 LINK_LOST / ESTOP 才断 STBY）、统计字段含义、与底盘库的单位与坐标约定（⚠️ 与 §16.10 的 Jetson `ChassisCommand` 约定不同）、PC 端验证工具与 5 条踩坑；§19 顺延为版本记录 |
+| 0.19 | 2026-10-21 | **CAN 正式链路落地 + 文档同步**：①新增 `UserLib/Comm/can_link`（`0x000`/`0x020`/`0x021` + `0x110~0x114` 五帧反馈，TX 队列、`CAN_ERR`）；②`uart_link` 抽出 4 个复用入口供 CAN 调用（协议零重写）；③`can_test` 改 `CANTEST_ENABLE` 编译开关，与 `CAN_LINK_ENABLE` 互斥；④§15/§16 更新为 CAN 已打通状态（CANable 2.0），§16.9~§16.12 按实际实现重写，坐标约定两侧统一；⑤`docs/CAN_CONTROL_PROTOCOL.md` 定稿 v0.5；⑥§18 补充「串口/CAN 双链路」说明 |

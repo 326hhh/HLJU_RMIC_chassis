@@ -2,7 +2,7 @@
 黑大2026校内赛小车底盘控制代码
 
 STM32F407VGTx + TB6612 + 麦轮底盘，编码器测速闭环 PID + IMU（LSM6DSV16X）陀螺偏航闭环（小陀螺），
-并通过 USART2 与 Jetson 上位机通信。
+并通过 **USART2（串口）或 CAN1（CAN 总线）** 与 Jetson 上位机通信。
 用户代码在 `UserLib/Chassis/`、`UserLib/Comm/` 与 `UserLib/IMU/`，接口说明见 [docs/CHASSIS_LIBRARY.md](docs/CHASSIS_LIBRARY.md)。
 
 ## 功能概览
@@ -11,10 +11,16 @@ STM32F407VGTx + TB6612 + 麦轮底盘，编码器测速闭环 PID + IMU（LSM6DS
   轮速斜坡、编码器滑窗测速、里程计积分。
 - **陀螺外环**：LSM6DSV16X 实测 wz 给运动学打补丁 —— 角速度闭环（RATE）、小陀螺定速自旋（SPIN）、
   底盘对准目标角（YAW_TARGET，预留给云台跟随）。
-- **上位机链路**：USART2 二进制定长帧（12 B 命令 / 40 B 反馈，100 Hz 回传），CRC-8 校验、
-  100 ms 看门狗、急停锁存。
+- **上位机链路（串口版 `uart_link`）**：USART2 二进制定长帧（12 B 命令 / 40 B 反馈，100 Hz 回传），
+  CRC-8 校验、100 ms 看门狗、急停锁存。
+- **上位机链路（CAN 版 `can_link`）**：CAN1 1 Mbps 标准帧，协议与串口版**逐字段一致**
+  ——`0x020` 速度命令（100 Hz）+ `0x021` 标志帧（10 Hz 保活 + 变化即发）+ `0x000` 广播急停，
+  反馈 40 B 按 8 字节切成 `0x110~0x114` 五帧（100 Hz）；命令落地 / CRC / 看门狗全部复用 `uart_link`，
+  两条链路语义完全一致。编译开关 `CAN_LINK_ENABLE`，与 `can_test` 互斥（见
+  [docs/CAN_CONTROL_PROTOCOL.md](docs/CAN_CONTROL_PROTOCOL.md)）。
 - **调试/整定**：USART1 输出（RawText 文本 / VOFA+ JustFloat 波形）、`chassis_tune` 五种整定实验。
-- **CAN**：CAN1 链路验证模块（心跳/回显/自环自检），当前未在 `main.c` 启用，见 [docs/CAN_TEST.md](docs/CAN_TEST.md)。
+- **CAN 链路验证（`can_test`）**：心跳/回显/点灯/自环自检、TEC/REC/LEC 诊断；由 `CANTEST_ENABLE`
+  编译开关控制，与 `can_link` 互斥。见 [docs/CAN_TEST.md](docs/CAN_TEST.md)。
 
 ## 目录结构
 
@@ -45,11 +51,12 @@ INTRA_SCHOOL_COMPETITION_27RM/
 ├── Drivers/                           # STM32F4 HAL + CMSIS（原样，不要手改）
 ├── UserLib/                           # 用户代码库
 │   ├── Chassis/                       # 底盘：麦轮解算 / 测速 / PID / 里程计 / 陀螺外环 / 调试 / 整定
-│   ├── Comm/                          # 通信：USART2 控制链路 + CAN 链路验证
+│   ├── Comm/                          # 通信：USART2 链路 uart_link + CAN 正式链路 can_link + CAN 验证 can_test
 │   └── IMU/                           # LSM6DSV16X 驱动与姿态处理（零偏/轴映射/yaw 积分）
 ├── docs/                              # 详细文档
 │   ├── CHASSIS_LIBRARY.md             # 底盘库完整文档（原理/标定/整定/实测/协议）
-│   └── CAN_TEST.md                    # CAN 链路验证与排障
+│   ├── CAN_TEST.md                    # CAN 链路验证与排障（can_test 模块）
+│   └── CAN_CONTROL_PROTOCOL.md        # CAN 正式控制协议（can_link 帧表/组规则/联调记录，v0.5）
 ├── hardware/                          # 底盘扩展板原理图 / 立创 EDA 工程
 ├── test_data/                         # 实测数据归档（历史 PID / 整定 / IMU 日志）
 ├── tools/                             # PC 端工具（数据分析 / 协议参考 / 交叉校验）
@@ -69,7 +76,7 @@ CubeMX 生成、在 `/* USER CODE */` 区外**不要手改**（重新生成会�
 
 | 文件 | 行数 | 做了什么 / 实现了什么 |
 |---|---|---|
-| `Core/Src/main.c` | 230 | 应用入口。`SystemClock_Config()` 把 HSE 8 MHz 经 PLL 倍到 **168 MHz**（APB1 42 MHz、APB2 84 MHz）；按 CubeMX 顺序初始化 GPIO/TIM/USART/I2C/CAN；USER CODE 区依次调 `chassis_init()`、`uart_link_init()`，按开关选择 `chassis_tune_init()` 或演示模式；主循环 `chassis_poll()` + `uart_link_poll()` + 调试/整定轮询；`can_test` 调用当前注释掉。`Error_Handler()` 关中断死循环。 |
+| `Core/Src/main.c` | ~245 | 应用入口。`SystemClock_Config()` 把 HSE 8 MHz 经 PLL 倍到 **168 MHz**（APB1 42 MHz、APB2 84 MHz）；按 CubeMX 顺序初始化 GPIO/TIM/USART/I2C/CAN；USER CODE 区依次调 `chassis_init()`、`uart_link_init()`，按编译开关选择 `chassis_tune_init()` 或演示模式；主循环 `chassis_poll()` + `uart_link_poll()` + 调试/整定轮询，并按 `CAN_LINK_ENABLE` / `CANTEST_ENABLE` 用 `#if` 包住 `can_link_init/poll` 与 `can_test_init/poll`（不再靠注释代码切换）。`Error_Handler()` 关中断死循环。 |
 | `Core/Src/gpio.c` | 115 | `MX_GPIO_Init()`：使能 GPIOA~E 时钟，把 TB6612 的 STBY / AIN1 / AIN2 / BIN1 / BIN2（左板 PC4/PC5、PB0/PB1 + PA4；右板 PE7/PE8/PE10/PE12/PE13）和 LED（PB2）配成推挽输出，上电电平全部先拉低（电机不转）。PA0 配成输入。 |
 | `Core/Src/tim.c` | 607 | **编码器**：TIM1/TIM3/TIM4/TIM8 配成编码器接口模式（TI12 四倍频，32 kHz 计数），对应右前/左前/左后/右后。**PWM**：TIM5（72 MHz/72=1 MHz 计数、周期 100 → 10 kHz）输出 CH2/CH3/CH4 = PA1/PA2/PA3；TIM9（168 MHz/168=1 MHz）输出 CH1 = PE5。还包含各外设的 MspInit/MspDeInit/MspPostInit（时钟与 GPIO 复用）。 |
 | `Core/Src/usart.c` | 192 | USART1（PA9/PA10，115200 8N1）作调试输出；USART2（PD5/PD6，115200 8N1）作 Jetson 链路，并在 MspInit 里打开 **USART2 全局中断**（NVIC 优先级 6）——`uart_link.c` 靠它逐字节收帧。 |
@@ -94,7 +101,7 @@ CubeMX 生成、在 `/* USER CODE */` 区外**不要手改**（重新生成会�
 | 目录 | 一句话职责 | 详细文档 |
 |---|---|---|
 | `UserLib/Chassis/` | 麦轮底盘的完整控制链：运动学逆解 → 轮速斜坡 → 四轮 PI + 前馈 → TB6612；编码器滑窗测速 + 正解里程计；陀螺外环（小陀螺）；调试输出与 PID 整定实验。 | [UserLib/Chassis/README.md](UserLib/Chassis/README.md) |
-| `UserLib/Comm/` | 通信层：`uart_link` 是 USART2 上位机链路（帧解析/命令执行/看门狗/反馈帧）；`can_test` 是 CAN1 链路验证（自环自检/心跳/回显）。 | [UserLib/Comm/README.md](UserLib/Comm/README.md) |
+| `UserLib/Comm/` | 通信层：`uart_link` 是 USART2 上位机链路（串口版）；`can_link` 是 CAN1 正式控制链路（与串口版协议逐字段一致）；`can_test` 是 CAN1 链路验证工具（自环自检/心跳/回显）。`uart_link` 与 `can_link` 可并存（谁先到谁生效），`can_link` 与 `can_test` 编译期互斥。 | [UserLib/Comm/README.md](UserLib/Comm/README.md) |
 | `UserLib/IMU/` | LSM6DSV16X 驱动：I2C 事务（硬件/软件双后端）、地址探测、量程/速率/滤波配置、上电零偏标定与静止零偏跟踪、轴映射、yaw 积分、总线卡死恢复。 | [UserLib/IMU/README.md](UserLib/IMU/README.md) |
 
 ## 接线
@@ -185,6 +192,12 @@ USART1 是调试/整定输出口；USART2 是 Jetson 控制链路（协议见 `U
 | CAN1_RX | PB8 |
 | CAN1_TX | PB9 |
 
+CAN1 工作速率 **1 Mbps**（与 Jetson 侧 `can0` 一致）。收发器 TJA1050（5 V），
+两端 120 Ω 终端、共地。Jetson 侧用 CANable 2.0（`ttyACM*` → `can0`）接入；
+云台 ZDT 步进用 29-bit 扩展帧与底盘 11-bit 标准帧混跑，天然隔离。
+链路验证见 [docs/CAN_TEST.md](docs/CAN_TEST.md)，正式协议与联调记录见
+[docs/CAN_CONTROL_PROTOCOL.md](docs/CAN_CONTROL_PROTOCOL.md)。
+
 ## 编译
 
 ```bash
@@ -207,3 +220,4 @@ pyocd flash -t stm32f407vgtx build/Debug/INTRA_SCHOOL_COMPETITION_27RM.elf --con
 | 0.3 | 2025-10-18 | 调完了地盘PID的速度环 |
 | 0.4 | 2026-10-18 | 加入 IMU ，但没有在地上跑来调参 |
 | 0.5 | 2026-10-19 | ①接入 **USART2 上位机控制链路 `uart_link`**（12 B 命令 / 40 B 反馈、CRC-8、100 Hz 回传、100 ms 看门狗、急停锁存），并补齐 USART1/USART2 的 NVIC 与中断；②**IMU 链路定型**：硬件 I2C1 400 kHz（213 µs/读、500 Hz）、SA0 焊死 GND（地址固定 0x6A）、20 分钟 soak 零错误，噪声/零偏/漂移全部实测归档（§17）；③修复「电机一卡一卡」——根因是 SA0 弱上拉导致 I2C 地址在 0x6A/0x6B 间漂移，另加地址热切换、9 时钟总线解锁、`healthy` 掉线回退与 `eps/ad/sw/rec` 诊断字段；④小陀螺自旋默认速率 3.5 → **2.0 rad/s**（落地实测抓地极限约 2.0~2.5，3.5 时占空比顶满也到不了） |
+| 0.6 | 2026-10-21 | ①新增 **CAN 正式控制链路 `can_link`**（`0x020` 100 Hz + `0x021` 10 Hz 保活/变化即发 + `0x000` 广播急停；反馈 40 B 切 `0x110~0x114` 五帧，含组完整性规则），命令落地 / CRC / 看门狗全部复用 `uart_link`（在 `uart_link.c` 抽出 4 个复用入口 `ulink_apply_cmd12` / `ulink_build_fb_frame` / `ulink_tick_watchdog` / `ulink_set_extra_status`），两条链路语义严格一致；②`status` 新增 `CAN_ERR = 0x0100`（TEC/REC > 96 实时置位）；③`can_test` 改为编译开关 `CANTEST_ENABLE`，与 `CAN_LINK_ENABLE` **编译期互斥**（`#error` 拦下），`main.c` 用 `#if` 切换不再注释代码；④`can_link` 用 20 帧深 TX 环形队列连续发（3 个发送邮箱装不下 5 帧，成功才出队、整组进队不残缺）；⑤Jetson 侧 `CanChassisLink`（SocketCAN）同步落地并实测自检全绿，联调记录见 `docs/CAN_CONTROL_PROTOCOL.md` §9 |

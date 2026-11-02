@@ -21,6 +21,15 @@
 
 #include "stm32f4xx_hal.h"
 
+/* ============================== 启用开关 ==================================
+ * 1 = 启用 CAN 测试模块（联调/排障期）；0 = 关（正常整定/运行期）
+ * ⚠️ 与 `CAN_LINK_ENABLE` **互斥**：两者都要初始化 CAN1，
+ *    同时启用会在编译期报错拦下（见 can_link.c 顶部）。
+ * 用法：main.c 里用 `#if CANTEST_ENABLE` 包住 can_test_init/poll，
+ *      这样切换不再需要注释代码，也不怕 CubeMX 重新生成。
+ */
+#define CANTEST_ENABLE               0
+
 /* ============================== 时间基准 ================================== */
 /** CAN1 挂 APB1。本工程 PLLM=4/PLLN=168/PLLP=2 → HCLK 168MHz，APB1 = /4 = 42MHz */
 #define CANTEST_APB1_HZ              42000000UL

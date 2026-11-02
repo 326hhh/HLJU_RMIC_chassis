@@ -33,6 +33,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 转发配置：让只 include 本头文件的 main.c 也能拿到 CANTEST_ENABLE 等宏 */
+#include "can_test_config.h"
+
 /** 运行状态与统计（只读快照） */
 typedef struct
 {
