@@ -16,8 +16,8 @@ hardware/
 
 | 文件 | 内容 | 用途 |
 |---|---|---|
-| `底盘扩展板原理图_2026-10-09.pdf` | 底盘扩展板的完整原理图（电源、TB6612 驱动、编码器接口、CAN 收发、IMU I2C 座、各排针） | 查线、飞线整改、排障时对照 |
-| `校内赛底盘扩展板_2026-10-06_14-20-59_2026-10-09.epro2` | 同一块板的 **立创 EDA 专业版**工程源文件（.epro2 是压缩包，用立创 EDA 专业版打开） | 改版、重新导出原理图/PCB |
+| `SCH_Schematic1_2026-11-05.pdf` | 底盘扩展板的完整原理图（电源、TB6612 驱动、编码器接口、CAN 收发、IMU I2C 座、各排针） | 查线、飞线整改、排障时对照 |
+| `校内赛底盘扩展板.epro2` | 同一块板的 **立创 EDA 专业版**工程源文件（.epro2 是压缩包，用立创 EDA 专业版打开） | 改版、重新导出原理图/PCB |
 
 > 本目录没有 `.c` / `.h` 文件；与硬件相关的固件配置在 `Core/Src/`（引脚/外设初始化）和
 > `UserLib/IMU/imu_config.h`（IMU 接线相关的软件兜底）里。
@@ -32,7 +32,8 @@ hardware/
   软件 I2C 兜底实测 351 µs / 500 Hz。
 - 模块 INT 与 SA0 未接 MCU：INT 不用（纯轮询），SA0 由扩展板决定地址（代码对 0x6A / 0x6B 自动探测）。
 - 扩展板自带 TJA1050 CAN 收发器（VCC=5 V），发帧时 CANH/CANL 实测 3.10 / 1.704 V，
-  断电测终端电阻 118.9 Ω，详见 [`../docs/CAN_TEST.md`](../docs/CAN_TEST.md)。
+  断电测终端电阻 118.9 Ω，详见 [`../docs/README.md`](../docs/README.md)。
+- 重新绘制了扩展板原理图，**H5（IMU）座 SDA / SCL 与模块接线已修正** ，模块 SA0 接地。
 
 ## 相关文档
 
@@ -41,4 +42,4 @@ hardware/
 | 固件引脚分配（PWM/方向/编码器/USART/IIC/CAN） | [`../README.md`](../README.md) |
 | 底盘库接线与标定 | [`../UserLib/Chassis/README.md`](../UserLib/Chassis/README.md) |
 | IMU 接线与软件 I2C 兜底 | [`../UserLib/IMU/README.md`](../UserLib/IMU/README.md) |
-| CAN 物理层验证 | [`../docs/CAN_TEST.md`](../docs/CAN_TEST.md) |
+| CAN 物理层验证 | [`../docs/README.md`](../docs/README.md) |

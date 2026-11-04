@@ -28,7 +28,7 @@
  *   BR(右后): PWM=RB_PWMB=PE5(TIM9_CH1), 方向=R_BIN1(PE12)/R_BIN2(PE13), 编码器=TIM8(PC6/PC7)
  * fwd_in1/fwd_in2 = 该轮"正转"时 TB6612 IN1/IN2 电平。
  * 注意：方向电平沿用了旧线束的标定惯例（左轮 fwd=(0,1)、右轮 fwd=(1,0)），
- * 新线束/新驱动板首次上电必须按 docs/CHASSIS_LIBRARY.md §10 重新标定：
+ * 新线束/新驱动板首次上电必须按 docs/README.md §10 重新标定：
  * 某轮实际转向反了 -> 把该轮两个电平对调即可。
  */
 typedef struct

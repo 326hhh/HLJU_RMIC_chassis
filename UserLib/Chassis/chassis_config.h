@@ -8,7 +8,7 @@
   *   轮子编号顺序：0=FL(左前) 1=FR(右前) 2=BL(左后) 3=BR(右后)
   *   轮速正方向 = 沿 +x 向前滚动
   *
-  * 详细说明见 docs/CHASSIS_LIBRARY.md
+  * 详细说明见 docs/README.md
   ******************************************************************************
   */
 #ifndef USERLIB_CHASSIS_CHASSIS_CONFIG_H
@@ -103,7 +103,7 @@
  * fwd_in1/fwd_in2。
  * 标定：前进时若某轮实测转速为负（表现为该轮满占空比飞转），把对应值取反。
  * 注意：2025-10-06 重新布线后编码器接线全部变化，以下已重置为 +1 默认值，
- * 首次上电必须按 docs/CHASSIS_LIBRARY.md §10 逐轮标定后再落地跑。
+ * 首次上电必须按 docs/README.md §10 逐轮标定后再落地跑。
  */
 #define CHASSIS_ENC_DIR_FL           +1
 #define CHASSIS_ENC_DIR_FR           -1
@@ -113,7 +113,7 @@
 /* ======================= 陀螺偏航闭环（小陀螺 / 云台跟随） ==================
  * 用底盘 IMU（LSM6DSV16X）实测的 wz 给运动学打补丁：
  *   wz_out = clamp(wz_ref + Kp·e + Ki·∫e, ±MAX_WZ)，e = wz_ref − wz_gyro
- * 详见 chassis_gyro.c 顶部注释与 docs/CHASSIS_LIBRARY.md §17。
+ * 详见 chassis_gyro.c 顶部注释与 docs/README.md §17。
  *
  * 调参直觉：
  *   - 自旋速率稳态差得多、要好几百毫秒才拉回来 -> 加 KP（0.2 一档）
@@ -123,7 +123,7 @@
 /** 1 = 启用陀螺外环（IMU 没插也能编译，运行时自动退回纯运动学）
  *  0 = **编译期整段关断**：模式恒为 OFF，wz 直通运动学（纯前馈，不补打滑）。
  *  由 `chassis_gyro.c` 的 init/set_mode 里的 `#if` 实现（2026-11 才真正接上，
- *  在此之前本宏无人引用，改成 0 无效）。用途与判定流程见 docs/CHASSIS_LIBRARY.md §17.9。
+ *  在此之前本宏无人引用，改成 0 无效）。用途与判定流程见 docs/README.md §17.8。
  *  ⚠️ 只改 CHASSIS_GYRO_MODE_DEFAULT 是没用的：uart_link 每帧调 chassis_spin(0)
  *     会把模式强制切回 RATE。 */
 #define CHASSIS_GYRO_ENABLE          1
@@ -151,7 +151,7 @@
 /** 小陀螺默认自旋速率 (rad/s，逆时针为正)。
  *  2.0rad/s ≈ 115°/s，四轮约 105RPM。
  *  为什么不取运动学上限（250RPM ≈ 4.76rad/s）：麦轮原地自旋要四轮横向擦地，
- *  实测地砖上 3.5rad/s 时占空比顶满 1000‰ 也只能到 2.0~2.6rad/s（见 §17.6）。
+ *  实测地砖上 3.5rad/s 时占空比顶满 1000‰ 也只能到 2.0~2.6rad/s（见 §17.5）。
  *  等有开阔场地 + 不绕线的测试条件，再用扫速实验定实际上限 */
 #define CHASSIS_SPIN_RATE_RAD_S      2.00f
 
@@ -163,7 +163,7 @@
 /** 调试协议选择（VOFA+ 数据引擎要选对应的）：
  *  1 = RawData 文本，终端可直接读，人眼友好
  *  2 = JustFloat 二进制，小端 float + 帧尾 00 00 80 7F，给 VOFA+ 画波形
- *  通道定义（JustFloat, 共 17 通道，见 docs/CHASSIS_LIBRARY.md §6.6） */
+ *  通道定义（JustFloat, 共 17 通道，见 docs/README.md §6.6） */
 #define CHASSIS_DEBUG_PROTO_RAWTEXT      1
 #define CHASSIS_DEBUG_PROTO_JUSTFLOAT    2
 #define CHASSIS_DEBUG_PROTOCOL           CHASSIS_DEBUG_PROTO_RAWTEXT

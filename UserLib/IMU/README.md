@@ -1,7 +1,7 @@
 # IMU —— LSM6DSV16X 驱动与姿态数据
 
 > 本文与代码同步于 2026-10-18。引脚/接线以 [`../../README.md`](../../README.md) 为准，
-> 陀螺外环（小陀螺）的原理与实测数据以 [`../../docs/CHASSIS_LIBRARY.md`](../../docs/CHASSIS_LIBRARY.md) §17 为准。
+> 陀螺外环（小陀螺）的原理与实测数据以 [`../../docs/README.md`](../../docs/README.md) §17 为准。
 
 ## 1. 定位
 
@@ -252,8 +252,8 @@ t≈2.0s  零偏标定 300 点完成 → online=true → 控制环开始能用�
 
 | 想看什么 | 去哪 |
 |---|---|
-| 陀螺外环控制律（Kp/Ki/冻结/抗饱和） | `../../docs/CHASSIS_LIBRARY.md` §17.3 |
-| 三种模式与小陀螺/云台跟随接口 | 同上 §17.4 / §17.5 |
+| 陀螺外环控制律（Kp/Ki/冻结/抗饱和） | `../../docs/README.md` §17.3 |
+| 三种模式与小陀螺/云台跟随接口 | 同上 §17.4（含云台跟随接口） |
 | 噪声实测原始数据 | `../../test_data/spin_runs/imu_noise*.log` |
 | 自旋实验（实验 5）怎么跑 | 同上 §6.8 + `../../tools/README.md`（`spin_analysis.py`） |
 | 接线（引脚表） | `../../README.md` |

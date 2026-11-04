@@ -1,9 +1,9 @@
 # Comm —— 通信层（USART2 链路 + CAN 正式链路 + CAN 验证）
 
 > 本文与代码同步于 2026-10-21（含工作区未提交的 `can_link` 正式链路）。
-> CAN 排障方法、物理层实测、适配器选型教训见 [`../../docs/CAN_TEST.md`](../../docs/CAN_TEST.md)，
-> CAN 正式协议帧表/组规则/联调记录见 [`../../docs/CAN_CONTROL_PROTOCOL.md`](../../docs/CAN_CONTROL_PROTOCOL.md)，
-> 底盘库整体文档见 [`../../docs/CHASSIS_LIBRARY.md`](../../docs/CHASSIS_LIBRARY.md) §18（uart_link 协议全表）。
+> 本文只讲**通信层**：`uart_link` 协议细节见 §18、CAN 双链路与排障速查见 §15。
+> 合并后的完整文档在 [`../../docs/README.md`](../../docs/README.md)
+> （底盘库 §1~§14 · CAN §15 · 上位机 §16 · IMU §17 · uart_link §18 · 版本记录 §19）。
 
 ## 1. 定位
 
@@ -355,14 +355,14 @@ cansend can0 000#
 ```
 
 > 组规则、组内延迟、`CAN_ERR`、实测记录见
-> `docs/CAN_CONTROL_PROTOCOL.md` §3.2 / §9。
+> `docs/README.md` §15.7.2 / §15.12。
 
 ## 7. 现状与阻塞
 
 | 项 | 状态 |
 |---|---|
 | USART2 链路（uart_link） | ✅ 已接入 `main.c`，协议与 `tools/uart_link_test.py` 逐字节一致，有 PC 端交叉校验（`tools/codec_test.c`） |
-| CAN 正式链路（can_link） | ✅ 已实现（命令 `0x000`/`0x020`/`0x021` + 反馈 `0x110~0x114` 五帧 + TX 队列 + `CAN_ERR`），Jetson 侧 `CanChassisLink` 实测自检全绿（`docs/CAN_CONTROL_PROTOCOL.md` §9.1） |
+| CAN 正式链路（can_link） | ✅ 已实现（命令 `0x000`/`0x020`/`0x021` + 反馈 `0x110~0x114` 五帧 + TX 队列 + `CAN_ERR`），Jetson 侧 `CanChassisLink` 实测自检全绿（`docs/README.md` §15.10.1） |
 | CAN 软件链路 | ✅ 已验证：silent-loopback 自检 `tx`/`rx` 每秒同步 +2，`TEC=0 REC=0 LEC=none` |
 | CAN 物理层 | ✅ 已验证：TJA1050 VCC=5 V，发帧时 CANH/CANL = 3.10/1.704 V，断电测终端 118.9 Ω |
 | `can_test` 在 `main.c` 集成 | ✅ 改为 `CANTEST_ENABLE` 编译开关（默认 0，整定期关，不污染 USART1 调参数据），与 `can_link` 编译期互斥 |
@@ -388,7 +388,7 @@ cansend can0 000#
 
 | 坑 | 现象 | 本模块怎么处理的 |
 |---|---|---|
-| 5 帧反馈不是原子的 | 偶发"底盘状态跳变" | 接收端按 §4.2 组规则拼装；坏组/超时整组丢弃 |
+| 5 帧反馈不是原子的 | 偶发"底盘状态跳变" | 接收端按 §15.7.2 组规则拼装；坏组/超时整组丢弃 |
 | F407 只有 3 个发送邮箱 | 一帧都发不出去、`err=0x00200000` | 20 帧深 TX 队列 + 能发就发（成功才出队），组内 ≤2 ms |
 | `0x021` EN=0 被当成命令帧 | 反馈 `cmd_cnt` 莫名 +1、丢包率统计错乱 | EN=0 直接停车但不走命令通道（不刷新 `cmd_cnt`、不喂看门狗） |
 | 两组都初始化 CAN1 | 编译期互相打架 | `#if CAN_LINK_ENABLE && CANTEST_ENABLE` → `#error` |
@@ -409,11 +409,12 @@ cansend can0 000#
 
 | 想看什么 | 去哪 |
 |---|---|
-| uart_link 帧级细节/上位机对接 | `../../docs/CHASSIS_LIBRARY.md` **§18** |
-| CAN 正式协议：帧表 / 组规则 / 语义细节 / 联调记录 | `../../docs/CAN_CONTROL_PROTOCOL.md` |
-| 为什么要自己配位时序、位时序速查表 | `docs/CAN_TEST.md` §3 / §4 |
-| 完整排障表（TEC/REC/LEC 怎么读） | §9、§15.6 |
-| 物理层检查清单（万用表怎么量） | §10 |
-| 适配器选型踩坑（哪些 Linux 下不可用） | §15.8 |
-| 与 Jetson `ChassisLink` 的对接点与协议 | §16.9 / §16.10 |
+| uart_link 帧级细节/上位机对接 | `../../docs/README.md` **§18** |
+| CAN 正式协议：帧表 / 组规则 / 语义细节 / 联调记录 | `../../docs/README.md` **§15.7 ~ §15.10** |
+| 为什么要自己配位时序、位时序速查表 | `../../docs/README.md` §15.1 / §15.2 |
+| 完整排障表（TEC/REC/LEC 怎么读） | `../../docs/README.md` §15.5 |
+| 物理层检查清单（万用表怎么量） | `../../docs/README.md` §15.5 |
+| 适配器选型踩坑（哪些 Linux 下不可用） | `../../docs/README.md` §15.11 |
+| CAN 全静默（CAN_H/L 接反）复盘 | `../../docs/README.md` §15.12 |
+| 与 Jetson `ChassisLink` 的对接点与协议 | `../../docs/README.md` §16.7 |
 | 协议参考实现与台架测试工具 | `../../tools/README.md` |

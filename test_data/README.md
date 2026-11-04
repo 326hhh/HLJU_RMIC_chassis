@@ -148,4 +148,4 @@ test_data/
 引脚全部重新设计（README 新版）：PWM 改用 TIM5（PA1/PA2/PA3）+ TIM9（PE5），
 编码器改为 TIM1/TIM3/TIM4/TIM8（均 TI12 四倍频），方向引脚换新（PC4/PC5、PB0/PB1、
 PE8/PE10、PE12/PE13）。**此前所有标定结论（ENC_DIR、fwd 电平）随旧线束作废**，
-库已重置为默认值（v0.7），新线束需按 docs/CHASSIS_LIBRARY.md §10 从头标定。
+库已重置为默认值（v0.7），新线束需按 docs/README.md §10 从头标定。

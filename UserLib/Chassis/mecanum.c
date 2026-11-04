@@ -3,7 +3,7 @@
   * @file    mecanum.c
   * @brief   麦克纳姆轮运动学实现
   *
-  * 逆解公式（推导见 docs/CHASSIS_LIBRARY.md 附录）：
+  * 逆解公式（推导见 docs/README.md 附录）：
   *   omega_i = ( vx + S*ky_i*vy + S*kw_i*wz*L ) / r
   *   其中 L = lx + ly（半轴距+半轮距），S = CHASSIS_ROLLER_SIGN
   *   ky = {-1,+1,+1,-1},  kw = {-1,+1,-1,+1}  （FL FR BL BR 顺序）
@@ -14,7 +14,7 @@
 #include "chassis_math.h"
 
 /* 每轮 vy / wz 项的符号系数（FL FR BL BR）
- * ⚠ 两行必须「同源」：vy 与 wz 的符号都来自同一套辊筒方向 σ（见 docs/CHASSIS_LIBRARY.md 附录 A）。
+ * ⚠ 两行必须「同源」：vy 与 wz 的符号都来自同一套辊筒方向 σ（见 docs/README.md 附录 A）。
  *   单独翻某一行来"修方向"会重新变成不自洽的假表——2026-11 连续踩了两次：
  *     ① wz 写成前后对转 {-1,-1,+1,+1} → 纯 wz 指令变「往前窜 + 画弧」；
  *     ② vy 写成 σ 的负号形式 {+1,-1,-1,+1} → A/D 平移方向相反；
